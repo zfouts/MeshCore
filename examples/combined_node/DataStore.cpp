@@ -233,6 +233,8 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     file.read((uint8_t *)&_prefs.rx_boosted_gain, sizeof(_prefs.rx_boosted_gain));         // 89
     file.read((uint8_t *)_prefs.default_scope_name, sizeof(_prefs.default_scope_name));    // 90
     file.read((uint8_t *)_prefs.default_scope_key, sizeof(_prefs.default_scope_key));     // 121
+    file.read((uint8_t *)&_prefs.bot_enabled, sizeof(_prefs.bot_enabled));                 // 137 (combined_node; absent in old files -> default kept)
+    file.read((uint8_t *)&_prefs.bot_channel, sizeof(_prefs.bot_channel));                 // 138
 
     file.close();
   }
@@ -273,6 +275,8 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.rx_boosted_gain, sizeof(_prefs.rx_boosted_gain));         // 89
     file.write((uint8_t *)_prefs.default_scope_name, sizeof(_prefs.default_scope_name));    // 90
     file.write((uint8_t *)_prefs.default_scope_key, sizeof(_prefs.default_scope_key));     // 121
+    file.write((uint8_t *)&_prefs.bot_enabled, sizeof(_prefs.bot_enabled));                 // 137 (combined_node)
+    file.write((uint8_t *)&_prefs.bot_channel, sizeof(_prefs.bot_channel));                 // 138
 
     file.close();
   }

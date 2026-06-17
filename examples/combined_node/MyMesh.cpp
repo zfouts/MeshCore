@@ -284,6 +284,9 @@ uint8_t MyMesh::getExtraAckTransmitCount() const {
 }
 
 void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
+#ifdef WITH_COMBINED_EXTRAS
+  combinedOnRx(snr, rssi); // count received packets for stats
+#endif
   if (_serial->isConnected() && len + 3 <= MAX_FRAME_SIZE) {
     int i = 0;
     out_frame[i++] = PUSH_CODE_LOG_RX_DATA;
@@ -351,6 +354,9 @@ void MyMesh::onContactsFull() {
 }
 
 void MyMesh::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path_len, const uint8_t* path) {
+#ifdef WITH_COMBINED_EXTRAS
+  combinedOnNeighbour(contact, path_len); // track directly-heard neighbours
+#endif
   if (_serial->isConnected()) {
     if (is_new) {
       writeContactRespFrame(PUSH_CODE_NEW_ADVERT, contact);
@@ -483,7 +489,20 @@ bool MyMesh::filterRecvFloodPacket(mesh::Packet* packet) {
 }
 
 bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
-  return _prefs.client_repeat != 0;
+  if (_prefs.client_repeat == 0) return false;
+#ifdef WITH_RELAY_POLICY
+  bool allowed = relayPolicyAllows(packet); // repeater-grade hop/loop filtering
+#else
+  bool allowed = true;
+#endif
+#ifdef WITH_COMBINED_EXTRAS
+  combinedCountForward(allowed); // tally relayed/dropped for stats
+#endif
+  if (!allowed) return false;
+#ifdef WITH_BOT_COMMANDS
+  _relay_count++; // track relayed packets for the bot's telemetry reply
+#endif
+  return true;
 }
 
 void MyMesh::sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis) {
@@ -525,6 +544,9 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
 void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                            const char *text) {
   markConnectionActive(from); // in case this is from a server, and we have a connection
+#ifdef WITH_BOT_COMMANDS
+  handleBotCommand(from, pkt, sender_timestamp, text); // auto-reply; still delivered to app below
+#endif
   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
 }
 
@@ -544,6 +566,9 @@ void MyMesh::onSignedMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uin
 
 void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint32_t timestamp,
                                   const char *text) {
+#ifdef WITH_COMBINED_EXTRAS
+  handleBotChannel(channel, pkt, timestamp, text); // bot answers on the configured channel
+#endif
   int i = 0;
   if (app_target_ver >= 3) {
     out_frame[i++] = RESP_CODE_CHANNEL_MSG_RECV_V3;
@@ -881,6 +906,18 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.tx_power_dbm = LORA_TX_POWER;
   _prefs.gps_enabled = 0;       // GPS disabled by default
   _prefs.gps_interval = 0;      // No automatic GPS updates by default
+#if defined(WITH_BOT_COMMANDS) && RELAY_DEFAULT_ON
+  _prefs.client_repeat = 1;     // combined_node: act as a relay by default (first boot)
+#endif
+#ifdef WITH_COMBINED_EXTRAS
+  _prefs.bot_enabled = 1;       // bot answers by default
+  _prefs.bot_channel = 0xFF;    // channel bot off until configured (DM only)
+#endif
+#if defined(WITH_COMBINED_EXTRAS) && (ENV_INCLUDE_GPS == 1)
+  _prefs.gps_enabled = 1;                       // mobile node: track position from GPS
+  _prefs.gps_interval = COMBINED_GPS_INTERVAL_S; // (first-boot defaults; saved prefs win)
+  _prefs.advert_loc_policy = ADVERT_LOC_SHARE;  // share live location in adverts
+#endif
   //_prefs.rx_delay_base = 10.0f;  enable once new algo fixed
 #if defined(USE_SX1262) || defined(USE_SX1268)
 #ifdef SX126X_RX_BOOSTED_GAIN
@@ -969,6 +1006,9 @@ void MyMesh::begin(bool has_display) {
   radio_driver.setRxBoostedGainMode(_prefs.rx_boosted_gain);
   MESH_DEBUG_PRINTLN("RX Boosted Gain Mode: %s",
                      radio_driver.getRxBoostedGainMode() ? "Enabled" : "Disabled");
+#ifdef WITH_COMBINED_EXTRAS
+  combinedBegin(); // watchdog, persisted config, stats
+#endif
 }
 
 const char *MyMesh::getNodeName() {
@@ -1798,6 +1838,9 @@ void MyMesh::handleCmdFrame(size_t len) {
       strcpy(dp, sensors.getSettingValue(i));
       dp = strchr(dp, 0);
     }
+#ifdef WITH_COMBINED_EXTRAS
+    dp = combinedAppendVars((char *)&out_frame[1], dp); // expose bot_enable / bot_channel
+#endif
     _serial->writeFrame(out_frame, dp - (char *)out_frame);
   } else if (cmd_frame[0] == CMD_SET_CUSTOM_VAR && len >= 4) {
     cmd_frame[len] = 0;
@@ -1805,6 +1848,10 @@ void MyMesh::handleCmdFrame(size_t len) {
     char *np = strchr(sp, ':'); // look for separator char
     if (np) {
       *np++ = 0; // modify 'cmd_frame', replace ':' with null
+#ifdef WITH_COMBINED_EXTRAS
+      if (combinedSetVar(sp, np)) { writeOKFrame(); } else
+#endif
+      {
       bool success = sensors.setSettingValue(sp, np);
       if (success) {
         #if ENV_INCLUDE_GPS == 1
@@ -1822,6 +1869,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       } else {
         writeErrFrame(ERR_CODE_ILLEGAL_ARG);
       }
+      } // end combined-var fall-through block
     } else {
       writeErrFrame(ERR_CODE_ILLEGAL_ARG);
     }
@@ -2227,6 +2275,9 @@ void MyMesh::loop() {
 
 #ifdef DISPLAY_CLASS
   if (_ui) _ui->setHasConnection(_serial->isConnected());
+#endif
+#ifdef WITH_COMBINED_EXTRAS
+  combinedLoop(); // watchdog feed, low-batt shutdown, periodic mobile advert
 #endif
 }
 
