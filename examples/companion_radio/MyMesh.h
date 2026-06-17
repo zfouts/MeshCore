@@ -76,6 +76,43 @@
 #define REQ_TYPE_KEEP_ALIVE             0x02
 #define REQ_TYPE_GET_TELEMETRY_DATA     0x03
 
+#ifdef WITH_BOT_COMMANDS
+// combined_node extension (examples/combined_node). Inert in all other envs.
+#ifndef BOT_CMD_PREFIX
+#define BOT_CMD_PREFIX '!'   // direct messages starting with this are bot commands
+#endif
+#ifndef RELAY_DEFAULT_ON
+#define RELAY_DEFAULT_ON 1   // enable relay (client_repeat) by default on first boot
+#endif
+#endif
+
+#ifdef WITH_RELAY_POLICY
+// combined_node repeater-grade forward policy (examples/combined_node/RelayPolicy.cpp).
+// Refines the plain client_repeat relay with hop limits + loop detection so the
+// node behaves like a real range-extending repeater, not just a noisy client.
+#ifndef RELAY_FLOOD_MAX
+#define RELAY_FLOOD_MAX 64          // drop any flood pkt once it has travelled this many hops
+#endif
+#ifndef RELAY_FLOOD_MAX_UNSCOPED
+#define RELAY_FLOOD_MAX_UNSCOPED 64 // ... lower this to limit un-scoped flood spread
+#endif
+#ifndef RELAY_FLOOD_MAX_ADVERT
+#define RELAY_FLOOD_MAX_ADVERT 8    // ... adverts kept low so they don't blanket the mesh
+#endif
+#ifndef RELAY_LOOP_DETECT
+#define RELAY_LOOP_DETECT 2         // 0=off 1=minimal 2=moderate 3=strict
+#endif
+#endif
+
+#ifdef WITH_COMBINED_EXTRAS
+// Only the value needed by MyMesh.cpp's first-boot GPS defaults lives here; the
+// rest of the combined_node tunables are defined in CombinedNode.h. Keeping the
+// #ifndef means CombinedNode.h shares this value rather than clashing.
+#ifndef COMBINED_GPS_INTERVAL_S
+#define COMBINED_GPS_INTERVAL_S 120
+#endif
+#endif
+
 struct AdvertPath {
   uint8_t pubkey_prefix[7];
   uint8_t path_len;
@@ -199,6 +236,37 @@ private:
   void checkCLIRescueCmd();
   void checkSerialInterface();
   bool isValidClientRepeatFreq(uint32_t f) const;
+
+#ifdef WITH_BOT_COMMANDS
+  // Extension point implemented in examples/combined_node/BotCommands.cpp.
+  // Inert unless WITH_BOT_COMMANDS is defined (combined_node build envs only).
+  bool handleBotCommand(const ContactInfo& from, mesh::Packet* pkt, uint32_t sender_timestamp, const char* text);
+  bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, char* reply, size_t sz);
+  void sendBotReply(const ContactInfo& to, const char* text);
+  uint32_t _relay_count = 0; // packets relayed since boot (for bot telemetry)
+#endif
+#ifdef WITH_RELAY_POLICY
+  // Implemented in examples/combined_node/RelayPolicy.cpp. Repeater-grade
+  // forward filter (hop limits + loop detection); inert in other envs.
+  bool relayPolicyAllows(const mesh::Packet* packet);
+#endif
+#ifdef WITH_COMBINED_EXTRAS
+  // Robustness extensions implemented in examples/combined_node/CombinedNode.cpp:
+  // watchdog, low-battery shutdown, mobile GPS advert, neighbour/stats, persisted
+  // tunable config and remote admin. All state lives behind one pointer so the
+  // companion header gains only this member. Inert in all other envs.
+  struct CombinedState* _combined = nullptr;
+  void combinedBegin();
+  void combinedLoop();
+  void combinedOnRx(float snr, float rssi);
+  void combinedOnNeighbour(const ContactInfo& contact, uint8_t path_len);
+  void combinedCountForward(bool allowed);
+  void combinedFormatStats(char* reply, size_t sz);
+  void combinedFormatNeighbours(char* reply, size_t sz);
+  bool combinedSetVar(const char* name, const char* value);
+  char* combinedAppendVars(char* base, char* dp);
+  void handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t timestamp, const char* text);
+#endif
 
   // helpers, short-cuts
   void saveChannels() { _store->saveChannels(this); }
