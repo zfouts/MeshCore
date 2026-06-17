@@ -102,11 +102,19 @@ bool MyMesh::handleBotCommand(const ContactInfo& from, mesh::Packet* pkt,
 void MyMesh::handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* pkt,
                               uint32_t timestamp, const char* text) {
   // Channel messages arrive wire-formatted as "<sender_name>: <message>", so
-  // the command is NOT at text[0]. Skip past the "name: " prefix first.
+  // the command is NOT at text[0]. Skip past the "name: " prefix, and capture
+  // the sender name so we can tag them in the reply.
   const char* msg = text;
+  char sender[32] = {0};
   if (text) {
     const char* sep = strstr(text, ": ");
-    if (sep) msg = sep + 2;
+    if (sep) {
+      msg = sep + 2;
+      int nlen = sep - text;
+      if (nlen > (int)sizeof(sender) - 1) nlen = sizeof(sender) - 1;
+      memcpy(sender, text, nlen);
+      sender[nlen] = 0;
+    }
   }
 #ifdef BOT_DEBUG
   Serial.printf("[bot] CHAN rx: text='%s' msg='%s' rxidx=%d botchan=%d en=%d\n",
@@ -121,11 +129,15 @@ void MyMesh::handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* p
   if (!_combined->bot_limiter.allow((uint32_t)(_ms->getMillis() / 1000))) return; // throttled
   char reply[160];
   if (buildBotReply(msg + 1, pkt, timestamp, reply, sizeof(reply))) {
+    // Tag the requester so they know the reply is for them on a busy channel.
+    char tagged[200];
+    if (sender[0]) snprintf(tagged, sizeof(tagged), "@%s %s", sender, reply);
+    else           snprintf(tagged, sizeof(tagged), "%s", reply);
 #ifdef BOT_DEBUG
-    Serial.printf("[bot] CHAN reply -> '%s'\n", reply);
+    Serial.printf("[bot] CHAN reply -> '%s'\n", tagged);
 #endif
     mesh::GroupChannel ch = channel;  // sendGroupMessage wants a non-const ref
-    sendGroupMessage(getRTCClock()->getCurrentTimeUnique(), ch, _prefs.node_name, reply, strlen(reply));
+    sendGroupMessage(getRTCClock()->getCurrentTimeUnique(), ch, _prefs.node_name, tagged, strlen(tagged));
   }
 }
 #endif
