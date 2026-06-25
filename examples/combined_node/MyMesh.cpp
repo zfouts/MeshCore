@@ -912,6 +912,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
 #ifdef WITH_COMBINED_EXTRAS
   _prefs.bot_enabled = 1;       // bot answers by default
   _prefs.bot_channel = 0xFF;    // channel bot off until configured (DM only)
+  _prefs.ble_enabled = 1;       // BLE advertising on by default (toggle via `!ble off`)
 #endif
 #if defined(WITH_COMBINED_EXTRAS) && (ENV_INCLUDE_GPS == 1)
   _prefs.gps_enabled = 1;                       // mobile node: track position from GPS
@@ -1045,7 +1046,14 @@ bool MyMesh::isValidClientRepeatFreq(uint32_t f) const {
 
 void MyMesh::startInterface(BaseSerialInterface &serial) {
   _serial = &serial;
+#if defined(WITH_COMBINED_EXTRAS) && defined(BLE_PIN_CODE)
+  // Honour the persisted BLE on/off state (set via `!ble`). Only gated on BLE
+  // builds -- on USB builds this same interface is the companion serial link and
+  // must always stay enabled.
+  if (_prefs.ble_enabled) serial.enable(); else serial.disable();
+#else
   serial.enable();
+#endif
 }
 
 void MyMesh::handleCmdFrame(size_t len) {

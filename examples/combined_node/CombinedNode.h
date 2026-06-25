@@ -43,9 +43,20 @@
 #ifndef COMBINED_LOW_BATT_STRIKES
 #define COMBINED_LOW_BATT_STRIKES 5          // consecutive low reads before shutdown (debounce)
 #endif
+#ifndef COMBINED_LOWBATT_BEACON
+#define COMBINED_LOWBATT_BEACON 0            // 1 = broadcast a "going dark" msg on the bot
+#endif                                       // channel just before low-batt shutdown (solar nodes).
+#ifndef COMBINED_LOWBATT_BEACON_DRAIN_MS
+#define COMBINED_LOWBATT_BEACON_DRAIN_MS 5000 // max time to wait for the beacon to actually TX
+#endif                                        // before sleeping (covers flood pre-TX random delay)
 // NOTE: bot_enabled / bot_channel are persisted in companion's NodePrefs
 // (reliable, dedicated prefs storage) rather than here -- the DataStore blob
 // store rejects sub-100-byte records and evicts by age, so it can't hold them.
+
+// Single-cell LiPo cell voltage (mV) -> approximate state-of-charge percent
+// (0..100). All combined_node targets run single-cell LiPo packs. Instantaneous
+// reading, so it sags under TX load -- a rough gauge, not a coulomb-counter.
+uint8_t combinedLipoPercent(uint16_t mv);
 
 struct CombinedNeighbour {
   uint8_t  prefix[4];           // first 4 bytes of pubkey

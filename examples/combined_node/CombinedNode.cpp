@@ -11,10 +11,35 @@
 #include "CombinedNode.h"
 #include <Arduino.h>
 #include <string.h>
+// base64.hpp DEFINES its functions in the header, so it can only be included in
+// one translation unit (BaseChatMesh.cpp already does). Forward-declare the one
+// we need for `set bot_channel <name>,<base64psk>` and let the linker resolve it.
+extern unsigned int decode_base64(const unsigned char* input, unsigned int input_length, unsigned char* output);
 
 #if defined(ESP32)
 #include "esp_task_wdt.h"
 #endif
+
+// Piecewise-linear single-cell LiPo discharge curve (resting voltage). Points
+// run high->low; we clamp the ends and interpolate between brackets.
+uint8_t combinedLipoPercent(uint16_t mv) {
+  static const struct { uint16_t mv; uint8_t pct; } curve[] = {
+    {4200,100},{4150,95},{4110,90},{4080,85},{4020,80},{3980,75},{3950,70},
+    {3910,65},{3870,60},{3850,55},{3840,50},{3820,45},{3800,40},{3790,35},
+    {3770,30},{3750,25},{3730,20},{3710,15},{3690,10},{3610,5},{3270,0}
+  };
+  const int n = sizeof(curve) / sizeof(curve[0]);
+  if (mv >= curve[0].mv)     return 100;
+  if (mv <= curve[n-1].mv)   return 0;
+  for (int i = 1; i < n; i++) {
+    if (mv >= curve[i].mv) {  // bracketed by curve[i-1] (higher) and curve[i] (lower)
+      uint16_t lo_mv = curve[i].mv,  hi_mv = curve[i-1].mv;
+      uint8_t  lo_p  = curve[i].pct, hi_p  = curve[i-1].pct;
+      return lo_p + (uint8_t)(((uint32_t)(mv - lo_mv) * (hi_p - lo_p)) / (hi_mv - lo_mv));
+    }
+  }
+  return 0;
+}
 
 void MyMesh::combinedBegin() {
 #ifdef BOT_DEBUG
@@ -65,7 +90,16 @@ void MyMesh::combinedLoop() {
   // battery / USB power, where powerOff() (deep sleep) would be catastrophic.
   if (mv > COMBINED_LOW_BATT_FLOOR && mv < COMBINED_LOW_BATT_MV) {
     if (++_combined->low_batt_strikes >= COMBINED_LOW_BATT_STRIKES) {
-      board.powerOff(); // does not return on supported boards
+#if COMBINED_LOWBATT_BEACON
+      // Broadcast a final "going dark" message so the mesh knows this was a
+      // graceful low-battery shutdown (vs. a crash/theft/dead panel). Blocks
+      // until the packet actually transmits, then sleeps.
+      combinedLowBattBeacon(mv);
+#endif
+      // Solar/unattended: shut down with a self-recovery wake (LPCOMP voltage
+      // wake on nRF52) so the node revives when the panel recharges at dawn.
+      // Falls back to powerOff() on boards without a voltage-wake path.
+      board.powerOffUntilCharged(); // does not return on supported boards
     }
   } else {
     _combined->low_batt_strikes = 0;
@@ -120,13 +154,61 @@ void MyMesh::combinedOnNeighbour(const ContactInfo& contact, uint8_t path_len) {
 
 void MyMesh::combinedFormatStats(char* reply, size_t sz) {
   uint32_t up = _ms->getMillis() / 1000;
-  snprintf(reply, sz, "rx:%lu relay:%lu drop:%lu up:%lus batt:%dmV relay:%s",
+  uint16_t mv = board.getBattMilliVolts();
+  snprintf(reply, sz, "rx:%lu relay:%lu drop:%lu up:%lus batt:%dmV(%d%%) relay:%s",
            (unsigned long)(_combined ? _combined->stats.rx_count : 0),
            (unsigned long)(_combined ? _combined->stats.relayed : 0),
            (unsigned long)(_combined ? _combined->stats.dropped : 0),
-           (unsigned long)up, (int)board.getBattMilliVolts(),
+           (unsigned long)up, (int)mv, (int)combinedLipoPercent(mv),
            _prefs.client_repeat ? "on" : "off");
 }
+
+#if COMBINED_LOWBATT_BEACON
+// Broadcast a one-shot "going dark" message on the configured bot channel right
+// before a low-battery shutdown, then BLOCK until it actually transmits.
+//
+// LoRa TX is async: sendGroupMessage() only queues a packet -- the radio sends
+// it later from the dispatcher loop. Since the caller is about to SYSTEMOFF (and
+// never return), we must pump the radio here until the queue drains, or the
+// beacon would die unsent. We call BaseChatMesh::loop() directly (not our own
+// loop()) so we service the radio without re-entering the low-batt check, and we
+// feed the watchdog ourselves since combinedLoop() is bypassed.
+void MyMesh::combinedLowBattBeacon(uint16_t mv) {
+  if (!_combined) return;
+  if (_prefs.bot_channel == 0xFF) return;            // no bot channel -> nowhere to send
+
+  ChannelDetails d;
+  if (!getChannel(_prefs.bot_channel, d) || !d.name[0]) return; // channel gone
+
+  char text[100];
+  uint32_t up = _ms->getMillis() / 1000;
+  snprintf(text, sizeof(text), "%s going dark batt:%dmV(%d%%) up:%luh",
+           _prefs.node_name, (int)mv, (int)combinedLipoPercent(mv),
+           (unsigned long)(up / 3600));
+
+  // A channel message is a flood send; the dispatcher bumps its sent-flood
+  // counter only when a packet finishes transmitting. Snapshot it, send, then
+  // pump the radio until it ticks (TX completed) or we time out.
+  uint32_t sent_before = getNumSentFlood();
+  if (!sendGroupMessage(getRTCClock()->getCurrentTimeUnique(), d.channel,
+                        _prefs.node_name, text, strlen(text))) return;
+
+  // Drain: BaseChatMesh::loop() services radio TX without re-entering
+  // combinedLoop() (avoids recursing the low-batt check); feed the watchdog
+  // ourselves since that bypasses combinedLoop's feed. Best-effort: a TX
+  // timeout/fail won't tick the counter, so we just sleep after the window.
+  uint32_t start = _ms->getMillis();
+  while (getNumSentFlood() == sent_before
+         && (_ms->getMillis() - start) < COMBINED_LOWBATT_BEACON_DRAIN_MS) {
+    BaseChatMesh::loop();
+#if defined(ESP32)
+    if (_combined->wdt_on) esp_task_wdt_reset();
+#elif defined(NRF52_PLATFORM)
+    if (_combined->wdt_on) NRF_WDT->RR[0] = WDT_RR_RR_Reload;
+#endif
+  }
+}
+#endif // COMBINED_LOWBATT_BEACON
 
 void MyMesh::combinedFormatNeighbours(char* reply, size_t sz) {
   if (!_combined) { snprintf(reply, sz, "no data"); return; }
@@ -166,6 +248,40 @@ bool MyMesh::combinedSetVar(const char* name, const char* value) {
       return true;
     }
 #ifdef MAX_GROUP_CHANNELS
+    // Private channel, one-step: `set bot_channel <name>,<base64psk>` joins a
+    // private (random-key) channel into a free slot and binds the bot to it.
+    // Mirrors the hashtag auto-join below but sources the 128-bit key from the
+    // supplied base64 instead of sha256(name). Comma-separated so meshcli passes
+    // it as a single token (like `set radio f,bw,sf,cr`).
+    const char* comma = strchr(value, ',');
+    if (comma && comma > value) {
+      char chname[32];
+      int nlen = comma - value;
+      if (nlen > (int)sizeof(chname) - 1) nlen = sizeof(chname) - 1;
+      memcpy(chname, value, nlen);
+      chname[nlen] = 0;
+      const char* psk_b64 = comma + 1;
+      uint8_t key[32];
+      int klen = decode_base64((unsigned char*)psk_b64, strlen(psk_b64), key);
+      if (klen != 16 && klen != 32) return false;     // bad/short key
+      for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+        ChannelDetails d;
+        if (!getChannel(i, d) || d.name[0] != 0) continue; // first free slot
+        ChannelDetails nc;
+        memset(&nc, 0, sizeof(nc));
+        strncpy(nc.name, chname, sizeof(nc.name) - 1);
+        memcpy(nc.channel.secret, key, 16); // 128-bit key; setChannel derives hash
+        if (setChannel(i, nc)) {
+          saveChannels();
+          _prefs.bot_channel = (uint8_t)i;
+          savePrefs();
+          return true;
+        }
+        break;
+      }
+      return false; // no free slot
+    }
+
     // Otherwise treat it as a channel name (ignoring a leading '#').
     const char* want = (value[0] == '#') ? value + 1 : value;
     for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {

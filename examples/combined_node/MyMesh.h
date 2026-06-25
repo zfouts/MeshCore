@@ -261,6 +261,7 @@ private:
   void combinedOnRx(float snr, float rssi);
   void combinedOnNeighbour(const ContactInfo& contact, uint8_t path_len);
   void combinedCountForward(bool allowed);
+  void combinedLowBattBeacon(uint16_t mv);
   void combinedFormatStats(char* reply, size_t sz);
   void combinedFormatNeighbours(char* reply, size_t sz);
   bool combinedSetVar(const char* name, const char* value);

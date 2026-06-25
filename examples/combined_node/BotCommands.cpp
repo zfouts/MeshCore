@@ -16,6 +16,24 @@
 #ifdef WITH_COMBINED_EXTRAS
 #include "CombinedNode.h"   // bot rate-limiter + stats/neighbour helpers
 #endif
+#if defined(NRF52_PLATFORM)
+#include <utility/debug.h>  // dbgHeapFree() from the Adafruit nRF52 core
+#endif
+
+// Runtime malloc headroom in bytes, or -1 if unknown on this platform. On
+// nRF52 this is the linker heap region minus mallinfo().uordblks (the real
+// space new/malloc can still claim before colliding with the stack); on ESP32
+// it's ESP.getFreeHeap(). Surfaced via !telemetry so we can watch margin under
+// load instead of guessing from the static link report.
+static int combinedFreeHeap() {
+#if defined(ESP32)
+  return (int)ESP.getFreeHeap();
+#elif defined(NRF52_PLATFORM)
+  return dbgHeapFree();
+#else
+  return -1;
+#endif
+}
 
 // Match a command word at the start of `s` (case-sensitive, like CommonCLI).
 // Returns true when `s` begins with `word`.
@@ -68,9 +86,31 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
 
   } else if (cmdIs(cmd, "telemetry")) {
     uint32_t s = _ms->getMillis() / 1000;
-    snprintf(reply, sz, "batt:%dmV up:%lus relayed:%lu sensors:%d",
-             (int)board.getBattMilliVolts(), (unsigned long)s,
-             (unsigned long)_relay_count, (int)sensors.getNumSettings());
+    uint16_t mv = board.getBattMilliVolts();
+    char hbuf[16] = "";
+    int heap = combinedFreeHeap();
+    if (heap >= 0) snprintf(hbuf, sizeof(hbuf), " heap:%dB", heap);
+    snprintf(reply, sz, "batt:%dmV(%d%%) up:%lus relayed:%lu sensors:%d%s",
+             (int)mv, (int)combinedLipoPercent(mv), (unsigned long)s,
+             (unsigned long)_relay_count, (int)sensors.getNumSettings(), hbuf);
+
+#if defined(BLE_PIN_CODE)
+  } else if (cmdIs(cmd, "ble")) {
+    // Control command: toggle BLE advertising to save power on unattended nodes.
+    // The reply rides the LoRa mesh, not BLE, so it still arrives after `off`.
+    // Persisted in NodePrefs and re-applied at boot (see startInterface).
+    const char* arg = cmd + 3;            // skip "ble"
+    while (*arg == ' ') arg++;
+    if (cmdIs(arg, "on")) {
+      _prefs.ble_enabled = 1; savePrefs(); _serial->enable();
+      snprintf(reply, sz, "BLE on");
+    } else if (cmdIs(arg, "off")) {
+      _prefs.ble_enabled = 0; savePrefs(); _serial->disable();
+      snprintf(reply, sz, "BLE off");
+    } else {                              // bare `!ble` -> report current state
+      snprintf(reply, sz, "BLE %s", _serial->isEnabled() ? "on" : "off");
+    }
+#endif
 
   } else {
     return false; // unrecognised command -> stay silent

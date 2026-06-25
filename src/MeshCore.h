@@ -53,6 +53,11 @@ public:
   virtual void onAfterTransmit() { }
   virtual void reboot() = 0;
   virtual void powerOff() { /* no op */ }
+  // Like powerOff(), but for an *unattended/solar* low-battery shutdown: the
+  // board should arm a self-recovery wake (e.g. wake when the cell recharges)
+  // rather than a button-only wake, so the node revives on its own at sunrise.
+  // Default falls back to powerOff() for boards without a voltage-wake path.
+  virtual void powerOffUntilCharged() { powerOff(); }
   // Called by example setup() functions to signal that boot is complete.
   // Boards may override to stop a boot-indicator LED sequence or similar.
   // Default no-op: boards that don't care need not implement anything.

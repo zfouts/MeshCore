@@ -36,4 +36,5 @@ struct NodePrefs {  // persisted to file
   uint8_t default_scope_key[16];
   uint8_t bot_enabled;   // combined_node: bot master enable (0/1)
   uint8_t bot_channel;   // combined_node: group channel index the bot answers on (0xFF = off)
+  uint8_t ble_enabled;   // combined_node: BLE advertising enable (0/1) -- toggled via `!ble on/off`
 };
