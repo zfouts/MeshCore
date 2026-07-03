@@ -243,7 +243,11 @@ bool MyMesh::combinedSetVar(const char* name, const char* value) {
       return true;
     }
     if (value[0] >= '0' && value[0] <= '9') {       // numeric channel index
-      _prefs.bot_channel = (uint8_t)atoi(value);
+      int idx = atoi(value);
+#ifdef MAX_GROUP_CHANNELS
+      if (idx < 0 || idx >= MAX_GROUP_CHANNELS) return false;  // out of range (also blocks 255 = off-sentinel)
+#endif
+      _prefs.bot_channel = (uint8_t)idx;
       savePrefs();
       return true;
     }
@@ -270,7 +274,7 @@ bool MyMesh::combinedSetVar(const char* name, const char* value) {
         ChannelDetails nc;
         memset(&nc, 0, sizeof(nc));
         strncpy(nc.name, chname, sizeof(nc.name) - 1);
-        memcpy(nc.channel.secret, key, 16); // 128-bit key; setChannel derives hash
+        memcpy(nc.channel.secret, key, klen); // 128- or 256-bit key (channel.secret is 32B); setChannel derives hash
         if (setChannel(i, nc)) {
           saveChannels();
           _prefs.bot_channel = (uint8_t)i;
@@ -327,23 +331,33 @@ bool MyMesh::combinedSetVar(const char* name, const char* value) {
 }
 
 // Append our vars to the custom-vars GET reply. `base` is the start of the
-// value region; `dp` is the current write cursor. Returns the new cursor.
-char* MyMesh::combinedAppendVars(char* base, char* dp) {
+// value region; `dp` is the current write cursor; `end` is one-past the last
+// writable byte of the caller's frame. Returns the new cursor. The whole
+// "bot_enable:..,bot_channel:.." string is built in a local buffer first and
+// only appended if it fits, so a long channel name can never overrun `end`
+// (a prior sensor loop may already have filled the frame close to its cap).
+char* MyMesh::combinedAppendVars(char* base, char* dp, const char* end) {
   if (!_combined) return dp;
-  if (dp > base) *dp++ = ',';
-  dp += sprintf(dp, "bot_enable:%d", _prefs.bot_enabled ? 1 : 0);
-  *dp++ = ',';
+  char buf[80];
+  int n = 0;
+  if (dp > base) buf[n++] = ',';
+  n += snprintf(buf + n, sizeof(buf) - n, "bot_enable:%d,", _prefs.bot_enabled ? 1 : 0);
   uint8_t ch = _prefs.bot_channel;
   if (ch == 0xFF) {
-    dp += sprintf(dp, "bot_channel:off");
+    n += snprintf(buf + n, sizeof(buf) - n, "bot_channel:off");
   } else {
 #ifdef MAX_GROUP_CHANNELS
     ChannelDetails d;
-    if (getChannel(ch, d) && d.name[0]) dp += sprintf(dp, "bot_channel:%s", d.name);
-    else dp += sprintf(dp, "bot_channel:%d", ch);
+    if (getChannel(ch, d) && d.name[0]) n += snprintf(buf + n, sizeof(buf) - n, "bot_channel:%s", d.name);
+    else n += snprintf(buf + n, sizeof(buf) - n, "bot_channel:%d", ch);
 #else
-    dp += sprintf(dp, "bot_channel:%d", ch);
+    n += snprintf(buf + n, sizeof(buf) - n, "bot_channel:%d", ch);
 #endif
+  }
+  if (n >= (int)sizeof(buf)) n = sizeof(buf) - 1;   // snprintf clamp (defensive)
+  if (n > 0 && n <= (int)(end - dp)) {              // only append if it fully fits
+    memcpy(dp, buf, n);
+    dp += n;
   }
   return dp;
 }

@@ -1847,7 +1847,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       dp = strchr(dp, 0);
     }
 #ifdef WITH_COMBINED_EXTRAS
-    dp = combinedAppendVars((char *)&out_frame[1], dp); // expose bot_enable / bot_channel
+    dp = combinedAppendVars((char *)&out_frame[1], dp, (const char *)&out_frame[MAX_FRAME_SIZE]); // expose bot_enable / bot_channel
 #endif
     _serial->writeFrame(out_frame, dp - (char *)out_frame);
   } else if (cmd_frame[0] == CMD_SET_CUSTOM_VAR && len >= 4) {

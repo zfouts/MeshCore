@@ -8,11 +8,11 @@
 #define FIRMWARE_VER_CODE 13
 
 #ifndef FIRMWARE_BUILD_DATE
-#define FIRMWARE_BUILD_DATE "6 Jun 2026"
+#define FIRMWARE_BUILD_DATE __DATE__   // compiler-stamped at build time (e.g. "Jul  3 2026")
 #endif
 
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "v1.16.0"
+#define FIRMWARE_VERSION "v1.16.0-combined"
 #endif
 
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
@@ -265,7 +265,7 @@ private:
   void combinedFormatStats(char* reply, size_t sz);
   void combinedFormatNeighbours(char* reply, size_t sz);
   bool combinedSetVar(const char* name, const char* value);
-  char* combinedAppendVars(char* base, char* dp);
+  char* combinedAppendVars(char* base, char* dp, const char* end);
   void handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t timestamp, const char* text);
 #endif
 
