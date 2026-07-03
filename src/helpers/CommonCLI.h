@@ -111,6 +111,10 @@ public:
     // no op by default
   };
 
+  virtual void setBridgeWeb(bool enable) {
+    // no op by default (bridges with a web UI override this)
+  };
+
   virtual void setRxBoostedGain(bool enable) {
     // no op by default
   };

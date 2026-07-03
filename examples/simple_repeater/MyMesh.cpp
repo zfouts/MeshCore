@@ -201,6 +201,8 @@ uint8_t MyMesh::handleAnonClockReq(const mesh::Identity& sender, uint32_t sender
     reply_data[8] |= 0x01;  // is bridge, type UART
 #elif WITH_ESPNOW_BRIDGE
     reply_data[8] |= 0x03;  // is bridge, type ESP-NOW
+#elif defined(WITH_MQTT_BRIDGE)
+    reply_data[8] |= 0x05;  // is bridge, type MQTT
 #endif
     if (_prefs.disable_fwd) {   // is this repeater currently disabled
       reply_data[8] |= 0x80;  // is disabled
@@ -859,6 +861,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 #if defined(WITH_ESPNOW_BRIDGE)
       , bridge(&_prefs, _mgr, &rtc)
 #endif
+#if defined(WITH_MQTT_BRIDGE)
+      , bridge(&_prefs, _mgr, &rtc)
+#endif
 {
   last_millis = 0;
   uptime_millis = 0;
@@ -959,6 +964,9 @@ void MyMesh::begin(FILESYSTEM *fs) {
   if (_prefs.bridge_enabled) {
     bridge.begin();
   }
+#if defined(WITH_MQTT_BRIDGE)
+  bridge.setCli(this, &MyMesh::webCliTramp);   // expose repeater CLI to the bridge web UI
+#endif
 #endif
 
   radio_driver.setParams(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
