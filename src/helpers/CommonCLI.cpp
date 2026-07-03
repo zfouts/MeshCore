@@ -750,16 +750,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     _prefs->bridge_pkt_src = memcmp(&config[14], "rx", 2) == 0;
     savePrefs();
     strcpy(reply, "OK");
-  } else if (memcmp(config, "bridge.web ", 11) == 0) {
-    _callbacks->setBridgeWeb(memcmp(&config[11], "on", 2) == 0);   // bridge persists its own state
-    strcpy(reply, "OK");
-  } else if (memcmp(config, "bridge.secret ", 14) == 0) {
-    StrHelper::strncpy(_prefs->bridge_secret, &config[14], sizeof(_prefs->bridge_secret));
-#ifdef WITH_ESPNOW_BRIDGE
-    _callbacks->restartBridge();   // re-key the ESP-NOW medium (MQTT reads it live)
-#endif
-    savePrefs();
-    strcpy(reply, "OK");
 #endif
 #ifdef WITH_RS232_BRIDGE
   } else if (memcmp(config, "bridge.baud ", 12) == 0) {
@@ -784,6 +774,11 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, char* command, char* rep
     } else {
       strcpy(reply, "Error: channel must be between 1-14");
     }
+  } else if (memcmp(config, "bridge.secret ", 14) == 0) {
+    StrHelper::strncpy(_prefs->bridge_secret, &config[14], sizeof(_prefs->bridge_secret));
+    _callbacks->restartBridge();
+    savePrefs();
+    strcpy(reply, "OK");
 #endif
   } else if (memcmp(config, "adc.multiplier ", 15) == 0) {
     _prefs->adc_multiplier = atof(&config[15]);

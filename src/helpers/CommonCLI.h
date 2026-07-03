@@ -111,10 +111,6 @@ public:
     // no op by default
   };
 
-  virtual void setBridgeWeb(bool enable) {
-    // no op by default (bridges with a web UI override this)
-  };
-
   virtual bool setRxBoostedGain(bool enable) {
     return false; // CommonCLI reports unsupported if not overridden by wrapper
   };
