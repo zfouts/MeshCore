@@ -38,5 +38,5 @@ jobs:
         with:
           name: Combined Node Firmware ${{ env.GIT_TAG_VERSION }}
           body: ""
-          draft: true
+          draft: false
           files: out/*
