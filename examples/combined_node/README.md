@@ -88,11 +88,18 @@ companion app.
   as the bot channel (see below). Unrecognised commands are ignored silently.
   - `!ping` — `pong` with how this node heard you: SNR, RSSI, hop count (or
     `direct`), and approximate one-way latency
+  - `!path` — the complete route this request took to reach the node, as
+    `<name> [#<hops>] <hash>,<hash>,...` — the requester's name, the hop
+    count, and each traversed repeater's path-hash in hex (traversal order),
+    or `<name> [#0] direct` when heard straight from the sender with no relay
   - `!info` — node name, firmware version, relay on/off
   - `!uptime` — time since boot
   - `!telemetry` — battery mV, uptime, packets relayed, sensor count
   - `!stats` — rx / relayed / dropped / uptime / battery
   - `!neighbors` — directly-heard nodes and how long ago
+  - `!relay on` / `!relay off` / `!relay` — enable/disable packet forwarding
+    (a control command); takes effect immediately and is persisted. Bare
+    `!relay` reports the current state.
 
 ### Bot configuration (via meshcore-cli)
 

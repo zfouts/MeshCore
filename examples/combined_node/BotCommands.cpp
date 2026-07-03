@@ -46,7 +46,8 @@ static bool cmdIs(const char* s, const char* word) {
 // prefix). Returns true if a command matched and `reply` was filled; false for
 // unrecognised commands -- in which case we stay silent (no "unknown" reply).
 bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
-                           uint32_t sender_timestamp, char* reply, size_t sz) {
+                           uint32_t sender_timestamp, const char* sender_name,
+                           char* reply, size_t sz) {
   reply[0] = 0;
 
   if (cmdIs(cmd, "ping")) {
@@ -65,6 +66,29 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     if (flood) snprintf(reply, sz, "pong snr:%.1fdB hops:%u lat~%lds", (double)snr, (unsigned)hops, lat);
     else       snprintf(reply, sz, "pong snr:%.1fdB direct lat~%lds", (double)snr, lat);
 #endif
+
+  } else if (cmdIs(cmd, "path")) {
+    // Report the complete route this request took to reach us, formatted as
+    //   <name> [#<hops>] <hash>,<hash>,...
+    // where <name> is the requester, <hops> is how many repeaters relayed it,
+    // and each <hash> is one path-hash entry (getPathHashSize() bytes -- the
+    // leading bytes of that repeater's public-key hash) in traversal order.
+    // A direct (0-hop) packet was heard straight from the sender, no relay.
+    const char* who = (sender_name && sender_name[0]) ? sender_name : "?";
+    uint8_t hops = pkt ? pkt->getPathHashCount() : 0;
+    uint8_t hsz  = pkt ? pkt->getPathHashSize() : 1;
+    int n = snprintf(reply, sz, "%s [#%u]", who, (unsigned)hops);
+    if (hops == 0) {
+      n += snprintf(reply + n, sz - n, " direct");
+    } else {
+      const uint8_t* p = pkt->path;
+      for (uint8_t i = 0; i < hops && n < (int)sz - 1; i++) {
+        n += snprintf(reply + n, sz - n, i == 0 ? " " : ",");
+        for (uint8_t b = 0; b < hsz && n < (int)sz - 1; b++)
+          n += snprintf(reply + n, sz - n, "%02x", p[b]);
+        p += hsz;
+      }
+    }
 
 #ifdef WITH_COMBINED_EXTRAS
   } else if (cmdIs(cmd, "stats")) {
@@ -112,6 +136,23 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     }
 #endif
 
+  } else if (cmdIs(cmd, "relay")) {
+    // Control command: enable/disable packet forwarding (client_repeat) at
+    // runtime. allowPacketForward() reads _prefs.client_repeat live per packet
+    // (MyMesh.cpp), so the change takes effect immediately -- no reboot -- and
+    // savePrefs() persists it across boots (NodePrefs offset 62).
+    const char* arg = cmd + 5;            // skip "relay"
+    while (*arg == ' ') arg++;
+    if (cmdIs(arg, "on")) {
+      _prefs.client_repeat = 1; savePrefs();
+      snprintf(reply, sz, "relay on");
+    } else if (cmdIs(arg, "off")) {
+      _prefs.client_repeat = 0; savePrefs();
+      snprintf(reply, sz, "relay off");
+    } else {                              // bare `!relay` -> report current state
+      snprintf(reply, sz, "relay %s", _prefs.client_repeat ? "on" : "off");
+    }
+
   } else {
     return false; // unrecognised command -> stay silent
   }
@@ -131,7 +172,7 @@ bool MyMesh::handleBotCommand(const ContactInfo& from, mesh::Packet* pkt,
   if (_combined && !_combined->bot_limiter.allow((uint32_t)(_ms->getMillis() / 1000))) return true; // throttled
 #endif
   char reply[160];
-  if (buildBotReply(text + 1, pkt, sender_timestamp, reply, sizeof(reply)))
+  if (buildBotReply(text + 1, pkt, sender_timestamp, from.name, reply, sizeof(reply)))
     sendBotReply(from, reply);
   return true;
 }
@@ -168,11 +209,16 @@ void MyMesh::handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* p
   if (findChannelIdx(channel) != (int)_prefs.bot_channel) return;    // wrong channel
   if (!_combined->bot_limiter.allow((uint32_t)(_ms->getMillis() / 1000))) return; // throttled
   char reply[160];
-  if (buildBotReply(msg + 1, pkt, timestamp, reply, sizeof(reply))) {
+  if (buildBotReply(msg + 1, pkt, timestamp, sender, reply, sizeof(reply))) {
     // Tag the requester so they know the reply is for them on a busy channel.
     char tagged[200];
-    if (sender[0]) snprintf(tagged, sizeof(tagged), "@%s %s", sender, reply);
-    else           snprintf(tagged, sizeof(tagged), "%s", reply);
+    // Tag the requester with @name so they spot the reply on a busy channel --
+    // unless the reply already leads with their name (e.g. !path), which would
+    // otherwise read "@zanchez zanchez ...".
+    if (sender[0] && strncmp(reply, sender, strlen(sender)) != 0)
+      snprintf(tagged, sizeof(tagged), "@%s %s", sender, reply);
+    else
+      snprintf(tagged, sizeof(tagged), "%s", reply);
 #ifdef BOT_DEBUG
     Serial.printf("[bot] CHAN reply -> '%s'\n", tagged);
 #endif

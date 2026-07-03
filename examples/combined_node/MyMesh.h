@@ -241,7 +241,7 @@ private:
   // Extension point implemented in examples/combined_node/BotCommands.cpp.
   // Inert unless WITH_BOT_COMMANDS is defined (combined_node build envs only).
   bool handleBotCommand(const ContactInfo& from, mesh::Packet* pkt, uint32_t sender_timestamp, const char* text);
-  bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, char* reply, size_t sz);
+  bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, const char* sender_name, char* reply, size_t sz);
   void sendBotReply(const ContactInfo& to, const char* text);
   uint32_t _relay_count = 0; // packets relayed since boot (for bot telemetry)
 #endif
