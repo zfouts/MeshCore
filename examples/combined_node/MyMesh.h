@@ -243,6 +243,10 @@ private:
   bool handleBotCommand(const ContactInfo& from, mesh::Packet* pkt, uint32_t sender_timestamp, const char* text);
   bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, const char* sender_name, char* reply, size_t sz);
   void sendBotReply(const ContactInfo& to, const char* text);
+  // Resolve a path-hash entry (hsz bytes) to a known name -- this node, or a
+  // contact whose identity hash matches. Fills `out`, returns true on a hit.
+  // Short (1-2 byte) hashes can alias, so this is a best-effort convenience.
+  bool resolvePathHash(const uint8_t* hash, uint8_t hsz, char* out, size_t outsz);
   uint32_t _relay_count = 0; // packets relayed since boot (for bot telemetry)
 #endif
 #ifdef WITH_RELAY_POLICY
@@ -261,6 +265,7 @@ private:
   void combinedOnRx(float snr, float rssi);
   void combinedOnNeighbour(const ContactInfo& contact, uint8_t path_len);
   void combinedCountForward(bool allowed);
+  void combinedNotifyAck(const uint8_t* ack);   // clear pending bot reply on matching ACK
   void combinedLowBattBeacon(uint16_t mv);
   void combinedFormatStats(char* reply, size_t sz);
   void combinedFormatNeighbours(char* reply, size_t sz);

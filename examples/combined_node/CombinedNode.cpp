@@ -113,6 +113,25 @@ void MyMesh::combinedLoop() {
     _combined->next_advert_ms = futureMillis(COMBINED_ADVERT_INTERVAL_S * 1000);
   }
 #endif
+
+  // Resend an un-ACKed bot reply (bounded) so a single lost packet on a weak
+  // link doesn't swallow a !ping/!path answer. processAck() clears pending.ack
+  // when the recipient confirms; reusing the original timestamp keeps the ACK
+  // hash stable and lets the recipient dedupe the resends.
+#if COMBINED_BOT_REPLY_RETRIES > 0
+  CombinedPendingReply& pr = _combined->pending;
+  if (pr.ack != 0 && millisHasNowPassed(pr.next_ms)) {
+    if (pr.attempts_left > 0) {
+      pr.attempts_left--;
+      pr.attempt++;
+      uint32_t ea = 0, tmo = 0;
+      sendMessage(pr.to, pr.timestamp, pr.attempt, pr.text, ea, tmo);
+      pr.next_ms = futureMillis(tmo > 0 ? tmo : COMBINED_BOT_REPLY_TIMEOUT_MS);
+    } else {
+      pr.ack = 0;   // gave up; stop tracking
+    }
+  }
+#endif
 }
 
 void MyMesh::combinedOnRx(float snr, float rssi) {
@@ -224,6 +243,38 @@ void MyMesh::combinedFormatNeighbours(char* reply, size_t sz) {
     count++;
   }
   if (count == 0) snprintf(reply, sz, "heard: none yet");
+}
+
+// Clear the pending bot reply if `ack` matches its expected ACK, so the
+// combinedLoop() retry stops. Called from processAck() (bot-reply ACKs are not
+// tracked in the app's expected_ack_table).
+void MyMesh::combinedNotifyAck(const uint8_t* ack) {
+  if (_combined && _combined->pending.ack != 0 &&
+      memcmp(ack, &_combined->pending.ack, 4) == 0) {
+    _combined->pending.ack = 0;
+  }
+}
+
+// Resolve a path-hash entry (hsz bytes, a prefix of a node's public key) to a
+// friendly name for !path: this node, or a known contact whose identity hash
+// matches. Best-effort -- a short (1-2 byte) hash can alias more than one node,
+// and repeaters we've never adverted-heard won't be contacts, so many hops will
+// still fall back to hex at the call site. Returns true and fills `out` on a hit.
+bool MyMesh::resolvePathHash(const uint8_t* hash, uint8_t hsz, char* out, size_t outsz) {
+  if (!out || outsz == 0) return false;
+  if (self_id.isHashMatch(hash, hsz)) {                 // us
+    StrHelper::strncpy(out, _prefs.node_name, outsz);
+    return out[0] != 0;
+  }
+  ContactsIterator it = startContactsIterator();        // a known contact
+  ContactInfo c;
+  while (it.hasNext(this, c)) {
+    if (c.name[0] && c.id.isHashMatch(hash, hsz)) {
+      StrHelper::strncpy(out, c.name, outsz);
+      return out[0] != 0;
+    }
+  }
+  return false;
 }
 
 // --- meshcore-cli custom vars (CMD_GET/SET_CUSTOM_VARS) -----------------------

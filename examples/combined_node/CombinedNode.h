@@ -11,6 +11,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <helpers/ContactInfo.h>
 #include "RateLimiter.h"
 
 // ---- build-time tunables (override any of these in the env build_flags) ----
@@ -36,6 +37,12 @@
 #endif
 #ifndef COMBINED_BOT_RATE_SECS
 #define COMBINED_BOT_RATE_SECS 60            // ... per this many seconds
+#endif
+#ifndef COMBINED_BOT_REPLY_RETRIES
+#define COMBINED_BOT_REPLY_RETRIES 2         // extra resends of an un-ACKed bot reply (0 = fire-and-forget)
+#endif
+#ifndef COMBINED_BOT_REPLY_TIMEOUT_MS
+#define COMBINED_BOT_REPLY_TIMEOUT_MS 4000   // fallback resend interval when the send path gives no estimate
 #endif
 #ifndef COMBINED_MAX_NEIGHBOURS
 #define COMBINED_MAX_NEIGHBOURS 16           // size of the heard-neighbour table
@@ -72,10 +79,24 @@ struct CombinedStats {
   uint32_t boot_rtc;           // RTC time at boot
 };
 
+// One outstanding bot reply awaiting its ACK, so a reply lost on a weak link
+// gets resent instead of silently vanishing. Single slot (bot replies are
+// rate-limited and serialised); a newer reply overwrites an older pending one.
+struct CombinedPendingReply {
+  uint32_t    ack;            // expected ACK hash; 0 = nothing pending
+  uint32_t    timestamp;      // original msg timestamp, reused on resend so the ACK stays stable
+  uint32_t    next_ms;        // when to resend if still un-ACKed
+  uint8_t     attempt;        // resend attempt counter (dedup hint for the recipient)
+  uint8_t     attempts_left;  // remaining resends before giving up
+  ContactInfo to;             // recipient (sendMessage needs the full contact)
+  char        text[161];      // the reply text (bot replies are <=160 bytes)
+};
+
 struct CombinedState {
   CombinedStats     stats;
   CombinedNeighbour neighbours[COMBINED_MAX_NEIGHBOURS];
   RateLimiter       bot_limiter{COMBINED_BOT_RATE_MAX, COMBINED_BOT_RATE_SECS};
+  CombinedPendingReply pending;       // in-flight bot reply awaiting ACK (see combinedLoop retry)
   uint32_t          next_advert_ms;   // when to send the next periodic advert
   float             last_rssi;        // RSSI/SNR of the most recent raw RX (for !ping)
   float             last_snr;

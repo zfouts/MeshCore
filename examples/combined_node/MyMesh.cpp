@@ -418,6 +418,9 @@ void MyMesh::onContactPathUpdated(const ContactInfo &contact) {
 }
 
 ContactInfo*  MyMesh::processAck(const uint8_t *data) {
+#ifdef WITH_COMBINED_EXTRAS
+  combinedNotifyAck(data);  // clear a pending bot reply if this ACK confirms it
+#endif
   // see if matches any in a table
   for (int i = 0; i < EXPECTED_ACK_TABLE_SIZE; i++) {
     if (memcmp(data, &expected_ack_table[i].ack, 4) == 0) { // got an ACK from recipient

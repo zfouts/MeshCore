@@ -50,6 +50,11 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
                            char* reply, size_t sz) {
   reply[0] = 0;
 
+  // A request heard with zero path hashes came straight from the sender's
+  // radio (a direct neighbour). Control commands (!relay/!ble writes) require
+  // this, so only someone physically in range can change the node's state.
+  bool from_direct = pkt && pkt->getPathHashCount() == 0;
+
   if (cmdIs(cmd, "ping")) {
     // Report how THIS node heard the request: link quality, hop count, and a
     // rough one-way latency (sender clock vs ours; depends on RTC sync).
@@ -74,6 +79,8 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     // and each <hash> is one path-hash entry (getPathHashSize() bytes -- the
     // leading bytes of that repeater's public-key hash) in traversal order.
     // A direct (0-hop) packet was heard straight from the sender, no relay.
+    // Each hop is shown as a known name where we recognise the repeater
+    // (this node or a contact), else the raw hex hash.
     const char* who = (sender_name && sender_name[0]) ? sender_name : "?";
     uint8_t hops = pkt ? pkt->getPathHashCount() : 0;
     uint8_t hsz  = pkt ? pkt->getPathHashSize() : 1;
@@ -84,6 +91,12 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
       const uint8_t* p = pkt->path;
       for (uint8_t i = 0; i < hops && n < (int)sz - 1; i++) {
         n += snprintf(reply + n, sz - n, i == 0 ? " " : ",");
+#ifdef WITH_COMBINED_EXTRAS
+        char nm[24];
+        if (resolvePathHash(p, hsz, nm, sizeof(nm))) {
+          n += snprintf(reply + n, sz - n, "%s", nm);
+        } else
+#endif
         for (uint8_t b = 0; b < hsz && n < (int)sz - 1; b++)
           n += snprintf(reply + n, sz - n, "%02x", p[b]);
         p += hsz;
@@ -118,6 +131,18 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
              (int)mv, (int)combinedLipoPercent(mv), (unsigned long)s,
              (unsigned long)_relay_count, (int)sensors.getNumSettings(), hbuf);
 
+  } else if (cmdIs(cmd, "help")) {
+    // List the commands this build actually compiled. Writes (marked below)
+    // only work from a direct/0-hop sender.
+    int n = snprintf(reply, sz, "cmds: ping path info uptime telemetry help");
+#ifdef WITH_COMBINED_EXTRAS
+    n += snprintf(reply + n, sz - n, " stats neighbors");
+#endif
+    n += snprintf(reply + n, sz - n, " | direct-only: relay[on|off]");
+#if defined(BLE_PIN_CODE)
+    n += snprintf(reply + n, sz - n, " ble[on|off]");
+#endif
+
 #if defined(BLE_PIN_CODE)
   } else if (cmdIs(cmd, "ble")) {
     // Control command: toggle BLE advertising to save power on unattended nodes.
@@ -125,13 +150,18 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     // Persisted in NodePrefs and re-applied at boot (see startInterface).
     const char* arg = cmd + 3;            // skip "ble"
     while (*arg == ' ') arg++;
-    if (cmdIs(arg, "on")) {
+    if (*arg == 0) {                      // bare `!ble` -> status, readable from anywhere
+      snprintf(reply, sz, "BLE %s", _serial->isEnabled() ? "on" : "off");
+    } else if (!from_direct) {            // write requires a direct/0-hop sender
+      snprintf(reply, sz, "BLE: direct-only (you are %u hops away)",
+               (unsigned)(pkt ? pkt->getPathHashCount() : 0));
+    } else if (cmdIs(arg, "on")) {
       _prefs.ble_enabled = 1; savePrefs(); _serial->enable();
       snprintf(reply, sz, "BLE on");
     } else if (cmdIs(arg, "off")) {
       _prefs.ble_enabled = 0; savePrefs(); _serial->disable();
       snprintf(reply, sz, "BLE off");
-    } else {                              // bare `!ble` -> report current state
+    } else {
       snprintf(reply, sz, "BLE %s", _serial->isEnabled() ? "on" : "off");
     }
 #endif
@@ -143,13 +173,18 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     // savePrefs() persists it across boots (NodePrefs offset 62).
     const char* arg = cmd + 5;            // skip "relay"
     while (*arg == ' ') arg++;
-    if (cmdIs(arg, "on")) {
+    if (*arg == 0) {                      // bare `!relay` -> status, readable from anywhere
+      snprintf(reply, sz, "relay %s", _prefs.client_repeat ? "on" : "off");
+    } else if (!from_direct) {            // write requires a direct/0-hop sender
+      snprintf(reply, sz, "relay: direct-only (you are %u hops away)",
+               (unsigned)(pkt ? pkt->getPathHashCount() : 0));
+    } else if (cmdIs(arg, "on")) {
       _prefs.client_repeat = 1; savePrefs();
       snprintf(reply, sz, "relay on");
     } else if (cmdIs(arg, "off")) {
       _prefs.client_repeat = 0; savePrefs();
       snprintf(reply, sz, "relay off");
-    } else {                              // bare `!relay` -> report current state
+    } else {
       snprintf(reply, sz, "relay %s", _prefs.client_repeat ? "on" : "off");
     }
 
@@ -229,12 +264,26 @@ void MyMesh::handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* p
 #endif
 
 // Send a plain-text reply back to a contact, reusing BaseChatMesh's message
-// path (handles flood/direct routing and encryption). Fire-and-forget: we do
-// not track the ACK for bot replies.
+// path (handles flood/direct routing and encryption). When the send expects an
+// ACK we record it in the single pending-reply slot so combinedLoop() can resend
+// if the reply is lost on a weak link (see COMBINED_BOT_REPLY_RETRIES). Falls
+// back to fire-and-forget when extras are compiled out or no ACK is expected.
 void MyMesh::sendBotReply(const ContactInfo& to, const char* text) {
   uint32_t expected_ack = 0, est_timeout = 0;
   uint32_t ts = getRTCClock()->getCurrentTimeUnique();
   sendMessage(to, ts, 0, text, expected_ack, est_timeout);
+#ifdef WITH_COMBINED_EXTRAS
+  if (_combined && COMBINED_BOT_REPLY_RETRIES > 0 && expected_ack != 0) {
+    CombinedPendingReply& pr = _combined->pending;
+    pr.ack = expected_ack;
+    pr.timestamp = ts;              // reuse on resend so the ACK hash stays stable
+    pr.attempt = 0;
+    pr.attempts_left = COMBINED_BOT_REPLY_RETRIES;
+    pr.next_ms = futureMillis(est_timeout > 0 ? est_timeout : COMBINED_BOT_REPLY_TIMEOUT_MS);
+    pr.to = to;
+    StrHelper::strncpy(pr.text, text, sizeof(pr.text));
+  }
+#endif
 }
 
 #endif // WITH_BOT_COMMANDS

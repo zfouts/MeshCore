@@ -89,17 +89,27 @@ companion app.
   - `!ping` — `pong` with how this node heard you: SNR, RSSI, hop count (or
     `direct`), and approximate one-way latency
   - `!path` — the complete route this request took to reach the node, as
-    `<name> [#<hops>] <hash>,<hash>,...` — the requester's name, the hop
-    count, and each traversed repeater's path-hash in hex (traversal order),
-    or `<name> [#0] direct` when heard straight from the sender with no relay
+    `<name> [#<hops>] <hop>,<hop>,...` — the requester's name, the hop count,
+    and each traversed repeater in order. Each hop shows as a known **name**
+    (this node or a matching contact) where recognised, else the raw hex
+    path-hash. `<name> [#0] direct` when heard straight from the sender.
+    (Short hashes can alias, so name resolution is best-effort.)
+  - `!help` — lists the commands this build supports
   - `!info` — node name, firmware version, relay on/off
   - `!uptime` — time since boot
   - `!telemetry` — battery mV, uptime, packets relayed, sensor count
   - `!stats` — rx / relayed / dropped / uptime / battery
   - `!neighbors` — directly-heard nodes and how long ago
-  - `!relay on` / `!relay off` / `!relay` — enable/disable packet forwarding
-    (a control command); takes effect immediately and is persisted. Bare
-    `!relay` reports the current state.
+  - `!relay on` / `!relay off` / `!relay` — enable/disable packet forwarding;
+    takes effect immediately and is persisted. Bare `!relay` reports state.
+  - **Control commands** (`!relay on|off`, `!ble on|off`) only act on a
+    request heard **directly (0-hop)** — i.e. from a sender physically in
+    radio range. A relayed/multi-hop request gets a `direct-only` refusal, so
+    a distant party can't toggle the node. The bare status queries and all
+    read-only commands work from any distance.
+  - Replies to direct-message commands are **ACK-tracked and resent** (bounded)
+    if lost on a weak link, so `!ping`/`!path` are far more reliable
+    (`COMBINED_BOT_REPLY_RETRIES`, default 2).
 
 ### Bot configuration (via meshcore-cli)
 
