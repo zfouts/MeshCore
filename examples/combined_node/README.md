@@ -103,10 +103,12 @@ companion app.
   - `!relay on` / `!relay off` / `!relay` — enable/disable packet forwarding;
     takes effect immediately and is persisted. Bare `!relay` reports state.
   - **Control commands** (`!relay on|off`, `!ble on|off`) only act on a
-    request heard **directly (0-hop)** — i.e. from a sender physically in
-    radio range. A relayed/multi-hop request gets a `direct-only` refusal, so
-    a distant party can't toggle the node. The bare status queries and all
-    read-only commands work from any distance.
+    **DM** heard **directly (0-hop)** — i.e. from a sender physically in
+    radio range messaging the node itself. Channel requests get a `DM-only`
+    refusal and relayed/multi-hop DMs get `direct-only`, so a distant party
+    can't toggle the node. Deliberately no further auth (proximity is the
+    gate), and these are not listed in `!help`. The bare status queries and
+    all read-only commands work from any distance.
   - Replies to direct-message commands are **ACK-tracked and resent** (bounded)
     if lost on a weak link, so `!ping`/`!path` are far more reliable
     (`COMBINED_BOT_REPLY_RETRIES`, default 2).

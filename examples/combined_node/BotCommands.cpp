@@ -47,12 +47,14 @@ static bool cmdIs(const char* s, const char* word) {
 // unrecognised commands -- in which case we stay silent (no "unknown" reply).
 bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
                            uint32_t sender_timestamp, const char* sender_name,
-                           char* reply, size_t sz) {
+                           bool is_dm, char* reply, size_t sz) {
   reply[0] = 0;
 
   // A request heard with zero path hashes came straight from the sender's
   // radio (a direct neighbour). Control commands (!relay/!ble writes) require
-  // this, so only someone physically in range can change the node's state.
+  // this AND a DM (not the bot channel), so only someone physically in range
+  // messaging the node directly can change its state. Deliberately no other
+  // auth: proximity is the gate. They are also left out of !help.
   bool from_direct = pkt && pkt->getPathHashCount() == 0;
 
   if (cmdIs(cmd, "ping")) {
@@ -132,15 +134,12 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
              (unsigned long)_relay_count, (int)sensors.getNumSettings(), hbuf);
 
   } else if (cmdIs(cmd, "help")) {
-    // List the commands this build actually compiled. Writes (marked below)
-    // only work from a direct/0-hop sender.
-    int n = snprintf(reply, sz, "cmds: ping path info uptime telemetry help");
+    // List the read-only commands this build compiled. The control commands
+    // (!relay/!ble on|off, DM+direct-only) are intentionally NOT listed.
 #ifdef WITH_COMBINED_EXTRAS
-    n += snprintf(reply + n, sz - n, " stats neighbors");
-#endif
-    n += snprintf(reply + n, sz - n, " | direct-only: relay[on|off]");
-#if defined(BLE_PIN_CODE)
-    n += snprintf(reply + n, sz - n, " ble[on|off]");
+    snprintf(reply, sz, "cmds: ping path info uptime telemetry stats neighbors help");
+#else
+    snprintf(reply, sz, "cmds: ping path info uptime telemetry help");
 #endif
 
 #if defined(BLE_PIN_CODE)
@@ -152,7 +151,9 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     while (*arg == ' ') arg++;
     if (*arg == 0) {                      // bare `!ble` -> status, readable from anywhere
       snprintf(reply, sz, "BLE %s", _serial->isEnabled() ? "on" : "off");
-    } else if (!from_direct) {            // write requires a direct/0-hop sender
+    } else if (!is_dm) {                  // write requires a DM, not the bot channel
+      snprintf(reply, sz, "BLE: DM-only");
+    } else if (!from_direct) {            // ... AND a direct/0-hop sender
       snprintf(reply, sz, "BLE: direct-only (you are %u hops away)",
                (unsigned)(pkt ? pkt->getPathHashCount() : 0));
     } else if (cmdIs(arg, "on")) {
@@ -175,7 +176,9 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     while (*arg == ' ') arg++;
     if (*arg == 0) {                      // bare `!relay` -> status, readable from anywhere
       snprintf(reply, sz, "relay %s", _prefs.client_repeat ? "on" : "off");
-    } else if (!from_direct) {            // write requires a direct/0-hop sender
+    } else if (!is_dm) {                  // write requires a DM, not the bot channel
+      snprintf(reply, sz, "relay: DM-only");
+    } else if (!from_direct) {            // ... AND a direct/0-hop sender
       snprintf(reply, sz, "relay: direct-only (you are %u hops away)",
                (unsigned)(pkt ? pkt->getPathHashCount() : 0));
     } else if (cmdIs(arg, "on")) {
@@ -207,7 +210,7 @@ bool MyMesh::handleBotCommand(const ContactInfo& from, mesh::Packet* pkt,
   if (_combined && !_combined->bot_limiter.allow((uint32_t)(_ms->getMillis() / 1000))) return true; // throttled
 #endif
   char reply[160];
-  if (buildBotReply(text + 1, pkt, sender_timestamp, from.name, reply, sizeof(reply)))
+  if (buildBotReply(text + 1, pkt, sender_timestamp, from.name, true, reply, sizeof(reply)))
     sendBotReply(from, reply);
   return true;
 }
@@ -244,7 +247,7 @@ void MyMesh::handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* p
   if (findChannelIdx(channel) != (int)_prefs.bot_channel) return;    // wrong channel
   if (!_combined->bot_limiter.allow((uint32_t)(_ms->getMillis() / 1000))) return; // throttled
   char reply[160];
-  if (buildBotReply(msg + 1, pkt, timestamp, sender, reply, sizeof(reply))) {
+  if (buildBotReply(msg + 1, pkt, timestamp, sender, false, reply, sizeof(reply))) {
     // Tag the requester so they know the reply is for them on a busy channel.
     char tagged[200];
     // Tag the requester with @name so they spot the reply on a busy channel --
