@@ -310,6 +310,19 @@ int MyMesh::combinedResolveChannelArg(const char* value) {
     uint8_t key[32];
     int klen = decode_base64((unsigned char*)psk_b64, strlen(psk_b64), key);
     if (klen != 16 && klen != 32) return -1;     // bad/short key
+    // Idempotent: if a channel with this name already exists, re-key it in
+    // place instead of joining a duplicate. A duplicate is worse than useless:
+    // incoming packets resolve to the FIRST hash match, so a bot bound to the
+    // second copy never sees its own channel's messages.
+    for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+      ChannelDetails d;
+      if (!getChannel(i, d) || strcmp(d.name, chname) != 0) continue;
+      memset(d.channel.secret, 0, sizeof(d.channel.secret));
+      memcpy(d.channel.secret, key, klen);
+      if (!setChannel(i, d)) return -1;
+      saveChannels();
+      return i;
+    }
     for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
       ChannelDetails d;
       if (!getChannel(i, d) || d.name[0] != 0) continue; // first free slot
