@@ -5,13 +5,18 @@ its own firmware line. Releases are cut by pushing a `combined-node-vX.Y.Z` tag,
 which triggers `.github/workflows/build-combined-node-firmwares.yml` (builds all
 `*_combined_node_{usb,ble,solar}` envs and drafts a GitHub Release).
 
-## Unreleased
+## v0.2.0 (2026-07-03)
 - `set bot_control_channel <name|idx|off|name,b64psk>`: designate a (private)
   channel authorized for control writes at any hop count -- one channel message
-  controls every listening node. Key possession is the auth.
+  controls every listening node. Key possession is the auth. (Field-validated:
+  `!relay on|off` from the control channel round-trips on air.)
 - `!help` bot command lists the read-only commands (control commands unlisted).
 - Control writes (`!relay`, `!ble`) require a direct (0-hop) DM or the control
   channel; other channel requests get `DM-only`, relayed DMs get `direct-only`.
+- `name,psk` channel binding re-keys an existing same-name channel instead of
+  joining a duplicate (a dup breaks channel matching: packets resolve to the
+  first hash match).
+- Removed the unused `ui-tiny/` display-UI copy (no build env referenced it).
 - Bot DM replies are ACK-tracked and resent (bounded, `COMBINED_BOT_REPLY_RETRIES`)
   so `!ping`/`!path` survive a lost packet.
 - `!path` resolves each hop to a known name (self/contact) where possible.
