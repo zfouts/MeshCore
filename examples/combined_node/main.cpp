@@ -113,8 +113,14 @@ void halt() {
 
 void setup() {
   Serial.begin(115200);
+#ifdef COMBINED_BOOT_TRACE
+  delay(3000); Serial.println("[boot] serial up");
+#endif
 
   board.begin();
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot] board.begin ok");
+#endif
 
 #ifdef DISPLAY_CLASS
   DisplayDriver* disp = NULL;
@@ -129,7 +135,18 @@ void setup() {
   }
 #endif
 
-  if (!radio_init()) { halt(); }
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot] radio_init...");
+#endif
+  if (!radio_init()) {
+#ifdef COMBINED_BOOT_TRACE
+    Serial.println("[boot] RADIO INIT FAILED (SX1262 not responding) -- halting");
+#endif
+    halt();
+  }
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot] radio ok");
+#endif
 
   fast_rng.begin(radio_driver.getRngSeed());
 

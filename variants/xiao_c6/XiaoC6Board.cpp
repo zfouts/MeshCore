@@ -17,11 +17,23 @@ AutoDiscoverRTCClock rtc_clock(fallback_clock);
 SensorManager sensors;
 
 bool radio_init() {
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot]  fallback_clock...");
+#endif
   fallback_clock.begin();
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot]  rtc_clock(Wire)...");
+#endif
   rtc_clock.begin(Wire);
 
 #if defined(P_LORA_SCLK)
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot]  spi.begin...");
+#endif
   spi.begin(P_LORA_SCLK, P_LORA_MISO, P_LORA_MOSI);
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot]  sx1262 std_init...");
+#endif
   return radio.std_init(&spi);
 #else
   return radio.std_init();
