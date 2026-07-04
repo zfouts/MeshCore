@@ -6,9 +6,12 @@ which triggers `.github/workflows/build-combined-node-firmwares.yml` (builds all
 `*_combined_node_{usb,ble,solar}` envs and drafts a GitHub Release).
 
 ## Unreleased
-- `!help` bot command lists the commands the build supports.
-- Direct-only (0-hop) gating on control writes (`!relay`, `!ble`): only a sender
-  in direct radio range can toggle node state; relayed requests get refused.
+- `set bot_control_channel <name|idx|off|name,b64psk>`: designate a (private)
+  channel authorized for control writes at any hop count -- one channel message
+  controls every listening node. Key possession is the auth.
+- `!help` bot command lists the read-only commands (control commands unlisted).
+- Control writes (`!relay`, `!ble`) require a direct (0-hop) DM or the control
+  channel; other channel requests get `DM-only`, relayed DMs get `direct-only`.
 - Bot DM replies are ACK-tracked and resent (bounded, `COMBINED_BOT_REPLY_RETRIES`)
   so `!ping`/`!path` survive a lost packet.
 - `!path` resolves each hop to a known name (self/contact) where possible.

@@ -241,7 +241,7 @@ private:
   // Extension point implemented in examples/combined_node/BotCommands.cpp.
   // Inert unless WITH_BOT_COMMANDS is defined (combined_node build envs only).
   bool handleBotCommand(const ContactInfo& from, mesh::Packet* pkt, uint32_t sender_timestamp, const char* text);
-  bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, const char* sender_name, bool is_dm, char* reply, size_t sz);
+  bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, const char* sender_name, bool is_dm, bool is_ctl, char* reply, size_t sz);
   void sendBotReply(const ContactInfo& to, const char* text);
   // Resolve a path-hash entry (hsz bytes) to a known name -- this node, or a
   // contact whose identity hash matches. Fills `out`, returns true on a hit.
@@ -269,6 +269,8 @@ private:
   void combinedLowBattBeacon(uint16_t mv);
   void combinedFormatStats(char* reply, size_t sz);
   void combinedFormatNeighbours(char* reply, size_t sz);
+  int combinedResolveChannelArg(const char* value);  // channel idx, 0xFF=off, -1=fail
+  int combinedFormatChannelVar(char* buf, int n, size_t bufsz, const char* name, uint8_t ch);
   bool combinedSetVar(const char* name, const char* value);
   char* combinedAppendVars(char* base, char* dp, const char* end);
   void handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t timestamp, const char* text);

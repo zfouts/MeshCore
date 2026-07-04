@@ -236,6 +236,7 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     file.read((uint8_t *)&_prefs.bot_enabled, sizeof(_prefs.bot_enabled));                 // 137 (combined_node; absent in old files -> default kept)
     file.read((uint8_t *)&_prefs.bot_channel, sizeof(_prefs.bot_channel));                 // 138
     file.read((uint8_t *)&_prefs.ble_enabled, sizeof(_prefs.ble_enabled));                 // 139 (combined_node; absent in old files -> default kept)
+    file.read((uint8_t *)&_prefs.bot_control_channel, sizeof(_prefs.bot_control_channel)); // 140 (combined_node; absent in old files -> default kept)
 
     file.close();
   }
@@ -279,6 +280,7 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.bot_enabled, sizeof(_prefs.bot_enabled));                 // 137 (combined_node)
     file.write((uint8_t *)&_prefs.bot_channel, sizeof(_prefs.bot_channel));                 // 138
     file.write((uint8_t *)&_prefs.ble_enabled, sizeof(_prefs.ble_enabled));                 // 139 (combined_node)
+    file.write((uint8_t *)&_prefs.bot_control_channel, sizeof(_prefs.bot_control_channel)); // 140 (combined_node)
 
     file.close();
   }

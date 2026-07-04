@@ -104,24 +104,28 @@ companion app.
     takes effect immediately and is persisted. Bare `!relay` reports state.
   - **Control commands** (`!relay on|off`, `!ble on|off`) only act on a
     **DM** heard **directly (0-hop)** — i.e. from a sender physically in
-    radio range messaging the node itself. Channel requests get a `DM-only`
-    refusal and relayed/multi-hop DMs get `direct-only`, so a distant party
-    can't toggle the node. Deliberately no further auth (proximity is the
-    gate), and these are not listed in `!help`. The bare status queries and
-    all read-only commands work from any distance.
+    radio range messaging the node itself — **or** any message on the
+    configured **control channel** (see `bot_control_channel` below), where
+    possession of that private channel's key is the auth and hop count does
+    not matter, so one channel message can control the whole fleet. Other
+    channel requests get a `DM-only` refusal and relayed/multi-hop DMs get
+    `direct-only`. Deliberately no further auth, and these are not listed in
+    `!help`. The bare status queries and all read-only commands work from any
+    distance.
   - Replies to direct-message commands are **ACK-tracked and resent** (bounded)
     if lost on a weak link, so `!ping`/`!path` are far more reliable
     (`COMBINED_BOT_REPLY_RETRIES`, default 2).
 
 ### Bot configuration (via meshcore-cli)
 
-Two settings are exposed as custom vars and persisted, so you configure the bot
-locally over BLE/USB (not over the mesh):
+Three settings are exposed as custom vars and persisted, so you configure the
+bot locally over BLE/USB (not over the mesh):
 
 | Var | Values | Meaning |
 |-----|--------|---------|
-| `bot_enable`  | `0` / `1` | master enable for the bot (DMs + channel) |
+| `bot_enable`  | `0` / `1` | master enable for the bot (DMs + channels) |
 | `bot_channel` | channel name, index, or `off` | group channel the bot answers on (`off` = DM only) |
+| `bot_control_channel` | channel name, index, or `off` | channel authorized for **control writes** (`!relay`/`!ble on|off`) at any hop count — use a **private** channel; anyone holding its key controls the node |
 
 ```
 meshcore-cli get bot_enable bot_channel     # read current values
@@ -129,16 +133,21 @@ meshcore-cli set bot_channel "#bot"         # answer on a named channel (auto-jo
 meshcore-cli set bot_channel 0              # ...or by index
 meshcore-cli set bot_channel off            # disable channel bot (DM only)
 meshcore-cli set bot_enable 0               # turn the whole bot off
+meshcore-cli set bot_control_channel ops,BASE64PSK  # fleet control from private channel "ops"
+meshcore-cli set bot_control_channel off    # control via direct DM only
 ```
 
-`bot_channel` accepts a **channel name**, a numeric index, or `off`. If you give
-a **hashtag channel** name (`#name`) the node isn't joined to yet, it auto-joins
-by deriving the key (`sha256("#name")[:16]`) into a free channel slot and saving
-it. Private (random-key) channels can't be derived from a name -- join those in
-the app first, then set `bot_channel` to them by name. `get` reports the channel
-back by name.
+`bot_channel` and `bot_control_channel` accept a **channel name**, a numeric
+index, `off`, or `<name>,<base64psk>` (joins a private channel with the given
+16/32-byte key into a free slot and binds in one step -- handy for provisioning
+the same control channel across a fleet). If you give a **hashtag channel**
+name (`#name`) the node isn't joined to yet, it auto-joins by deriving the key
+(`sha256("#name")[:16]`) into a free channel slot and saving it. Private
+(random-key) channels can't be derived from a name -- join in the app first and
+bind by name, or use the `<name>,<base64psk>` form. `get` reports channels back
+by name. The bot answers read-only commands on the control channel too.
 
-Defaults: `bot_enable=1`, `bot_channel=off`. Channel replies go back to the same
+Defaults: `bot_enable=1`, `bot_channel=off`, `bot_control_channel=off`. Channel replies go back to the same
 channel; the reply rate-limit applies to channels too.
 
 ## Build

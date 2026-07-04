@@ -916,6 +916,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.bot_enabled = 1;       // bot answers by default
   _prefs.bot_channel = 0xFF;    // channel bot off until configured (DM only)
   _prefs.ble_enabled = 1;       // BLE advertising on by default (toggle via `!ble off`)
+  _prefs.bot_control_channel = 0xFF; // control channel off until configured
 #endif
 #if defined(WITH_COMBINED_EXTRAS) && (ENV_INCLUDE_GPS == 1)
   _prefs.gps_enabled = 1;                       // mobile node: track position from GPS

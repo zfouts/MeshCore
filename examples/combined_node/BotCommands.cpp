@@ -47,15 +47,18 @@ static bool cmdIs(const char* s, const char* word) {
 // unrecognised commands -- in which case we stay silent (no "unknown" reply).
 bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
                            uint32_t sender_timestamp, const char* sender_name,
-                           bool is_dm, char* reply, size_t sz) {
+                           bool is_dm, bool is_ctl, char* reply, size_t sz) {
   reply[0] = 0;
 
-  // A request heard with zero path hashes came straight from the sender's
-  // radio (a direct neighbour). Control commands (!relay/!ble writes) require
-  // this AND a DM (not the bot channel), so only someone physically in range
-  // messaging the node directly can change its state. Deliberately no other
-  // auth: proximity is the gate. They are also left out of !help.
+  // Control commands (!relay/!ble writes) are authorized two ways:
+  //  - a DM heard directly (0 path hashes = straight from the sender's radio),
+  //    so someone physically in range messaging the node can change its state;
+  //  - any message on the bot_control_channel (is_ctl) -- possession of that
+  //    private channel's key is the auth, and it works at any hop count so a
+  //    single channel message can control the whole fleet.
+  // Deliberately no other auth. Left out of !help.
   bool from_direct = pkt && pkt->getPathHashCount() == 0;
+  bool write_ok = is_ctl || (is_dm && from_direct);
 
   if (cmdIs(cmd, "ping")) {
     // Report how THIS node heard the request: link quality, hop count, and a
@@ -151,10 +154,8 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     while (*arg == ' ') arg++;
     if (*arg == 0) {                      // bare `!ble` -> status, readable from anywhere
       snprintf(reply, sz, "BLE %s", _serial->isEnabled() ? "on" : "off");
-    } else if (!is_dm) {                  // write requires a DM, not the bot channel
-      snprintf(reply, sz, "BLE: DM-only");
-    } else if (!from_direct) {            // ... AND a direct/0-hop sender
-      snprintf(reply, sz, "BLE: direct-only (you are %u hops away)",
+    } else if (!write_ok) {               // write requires a direct DM or the control channel
+      snprintf(reply, sz, is_dm ? "BLE: direct-only (you are %u hops away)" : "BLE: DM-only",
                (unsigned)(pkt ? pkt->getPathHashCount() : 0));
     } else if (cmdIs(arg, "on")) {
       _prefs.ble_enabled = 1; savePrefs(); _serial->enable();
@@ -176,10 +177,8 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     while (*arg == ' ') arg++;
     if (*arg == 0) {                      // bare `!relay` -> status, readable from anywhere
       snprintf(reply, sz, "relay %s", _prefs.client_repeat ? "on" : "off");
-    } else if (!is_dm) {                  // write requires a DM, not the bot channel
-      snprintf(reply, sz, "relay: DM-only");
-    } else if (!from_direct) {            // ... AND a direct/0-hop sender
-      snprintf(reply, sz, "relay: direct-only (you are %u hops away)",
+    } else if (!write_ok) {               // write requires a direct DM or the control channel
+      snprintf(reply, sz, is_dm ? "relay: direct-only (you are %u hops away)" : "relay: DM-only",
                (unsigned)(pkt ? pkt->getPathHashCount() : 0));
     } else if (cmdIs(arg, "on")) {
       _prefs.client_repeat = 1; savePrefs();
@@ -210,7 +209,7 @@ bool MyMesh::handleBotCommand(const ContactInfo& from, mesh::Packet* pkt,
   if (_combined && !_combined->bot_limiter.allow((uint32_t)(_ms->getMillis() / 1000))) return true; // throttled
 #endif
   char reply[160];
-  if (buildBotReply(text + 1, pkt, sender_timestamp, from.name, true, reply, sizeof(reply)))
+  if (buildBotReply(text + 1, pkt, sender_timestamp, from.name, true, false, reply, sizeof(reply)))
     sendBotReply(from, reply);
   return true;
 }
@@ -243,11 +242,17 @@ void MyMesh::handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* p
 #endif
   if (!_combined || !_prefs.bot_enabled) return;
   if (msg == NULL || msg[0] != BOT_CMD_PREFIX) return;
-  if (_prefs.bot_channel == 0xFF) return;                            // channel bot off
-  if (findChannelIdx(channel) != (int)_prefs.bot_channel) return;    // wrong channel
+  // The bot answers on the configured bot_channel AND on the control channel.
+  // A message on the control channel is write-authorized (is_ctl): possession
+  // of that (private) channel's key is the auth, so one channel message can
+  // toggle every listening node -- regardless of hop count.
+  int rxidx = findChannelIdx(channel);
+  bool on_bot = _prefs.bot_channel != 0xFF && rxidx == (int)_prefs.bot_channel;
+  bool is_ctl = _prefs.bot_control_channel != 0xFF && rxidx == (int)_prefs.bot_control_channel;
+  if (!on_bot && !is_ctl) return;                                    // not a channel we answer on
   if (!_combined->bot_limiter.allow((uint32_t)(_ms->getMillis() / 1000))) return; // throttled
   char reply[160];
-  if (buildBotReply(msg + 1, pkt, timestamp, sender, false, reply, sizeof(reply))) {
+  if (buildBotReply(msg + 1, pkt, timestamp, sender, false, is_ctl, reply, sizeof(reply))) {
     // Tag the requester so they know the reply is for them on a busy channel.
     char tagged[200];
     // Tag the requester with @name so they spot the reply on a busy channel --

@@ -278,7 +278,92 @@ bool MyMesh::resolvePathHash(const uint8_t* hash, uint8_t hsz, char* out, size_t
 }
 
 // --- meshcore-cli custom vars (CMD_GET/SET_CUSTOM_VARS) -----------------------
-// `set bot_enable 0|1`, `set bot_channel <idx|off>`. Returns true if handled.
+
+// Resolve a channel argument to a channel index. Accepts: "off"/"none" (0xFF),
+// a numeric index, "<name>,<base64psk>" (joins a private channel into a free
+// slot; 16- or 32-byte key), an already-joined channel name (leading '#'
+// optional), or "#name" (auto-joins the hashtag channel; key = first 16 bytes
+// of sha256("#name")). Returns the index, 0xFF for off, or -1 on failure.
+// Shared by `set bot_channel` and `set bot_control_channel`.
+int MyMesh::combinedResolveChannelArg(const char* value) {
+  if (strcmp(value, "off") == 0 || strcmp(value, "none") == 0) return 0xFF;
+  if (value[0] >= '0' && value[0] <= '9') {       // numeric channel index
+    int idx = atoi(value);
+#ifdef MAX_GROUP_CHANNELS
+    if (idx < 0 || idx >= MAX_GROUP_CHANNELS) return -1;  // out of range (also blocks 255 = off-sentinel)
+#endif
+    return idx;
+  }
+#ifdef MAX_GROUP_CHANNELS
+  // Private channel, one-step: "<name>,<base64psk>" joins a private
+  // (random-key) channel into a free slot. Mirrors the hashtag auto-join below
+  // but sources the key from the supplied base64 instead of sha256(name).
+  // Comma-separated so meshcli passes it as a single token (like `set radio f,bw,sf,cr`).
+  const char* comma = strchr(value, ',');
+  if (comma && comma > value) {
+    char chname[32];
+    int nlen = comma - value;
+    if (nlen > (int)sizeof(chname) - 1) nlen = sizeof(chname) - 1;
+    memcpy(chname, value, nlen);
+    chname[nlen] = 0;
+    const char* psk_b64 = comma + 1;
+    uint8_t key[32];
+    int klen = decode_base64((unsigned char*)psk_b64, strlen(psk_b64), key);
+    if (klen != 16 && klen != 32) return -1;     // bad/short key
+    for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+      ChannelDetails d;
+      if (!getChannel(i, d) || d.name[0] != 0) continue; // first free slot
+      ChannelDetails nc;
+      memset(&nc, 0, sizeof(nc));
+      strncpy(nc.name, chname, sizeof(nc.name) - 1);
+      memcpy(nc.channel.secret, key, klen); // 128- or 256-bit key (channel.secret is 32B); setChannel derives hash
+      if (setChannel(i, nc)) {
+        saveChannels();
+        return i;
+      }
+      break;
+    }
+    return -1; // no free slot
+  }
+
+  // Otherwise treat it as a channel name (ignoring a leading '#').
+  const char* want = (value[0] == '#') ? value + 1 : value;
+  for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+    ChannelDetails d;
+    if (!getChannel(i, d)) continue;
+    const char* nm = (d.name[0] == '#') ? d.name + 1 : d.name;
+    if (nm[0] && strcmp(nm, want) == 0) return i;
+  }
+
+  // Not joined yet. For a hashtag channel ("#name") the key is deterministic
+  // -- first 16 bytes of sha256("#name") -- so we can auto-join it into a free
+  // slot. (Private channels use a random key we can't derive from a name.)
+  if (value[0] == '#') {
+    char chname[32];
+    strncpy(chname, value, sizeof(chname) - 1);
+    chname[sizeof(chname) - 1] = 0;
+    for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+      ChannelDetails d;
+      if (!getChannel(i, d) || d.name[0] != 0) continue; // first free slot
+      ChannelDetails nc;
+      memset(&nc, 0, sizeof(nc));
+      strncpy(nc.name, chname, sizeof(nc.name) - 1);
+      uint8_t full[32];
+      mesh::Utils::sha256(full, sizeof(full), (const uint8_t*)chname, (int)strlen(chname));
+      memcpy(nc.channel.secret, full, 16); // 128-bit hashtag key; setChannel derives hash
+      if (setChannel(i, nc)) {
+        saveChannels();
+        return i;
+      }
+      break;
+    }
+  }
+#endif
+  return -1; // unknown channel name -> reported as an error to the CLI
+}
+
+// `set bot_enable 0|1`, `set bot_channel <idx|off|name|#tag|name,b64psk>`,
+// `set bot_control_channel <same syntax>`. Returns true if handled.
 bool MyMesh::combinedSetVar(const char* name, const char* value) {
   if (!_combined) return false;
 
@@ -287,96 +372,15 @@ bool MyMesh::combinedSetVar(const char* name, const char* value) {
     savePrefs();
     return true;
   }
-  if (strcmp(name, "bot_channel") == 0) {
-    if (strcmp(value, "off") == 0 || strcmp(value, "none") == 0) {
-      _prefs.bot_channel = 0xFF;
-      savePrefs();
-      return true;
-    }
-    if (value[0] >= '0' && value[0] <= '9') {       // numeric channel index
-      int idx = atoi(value);
-#ifdef MAX_GROUP_CHANNELS
-      if (idx < 0 || idx >= MAX_GROUP_CHANNELS) return false;  // out of range (also blocks 255 = off-sentinel)
-#endif
-      _prefs.bot_channel = (uint8_t)idx;
-      savePrefs();
-      return true;
-    }
-#ifdef MAX_GROUP_CHANNELS
-    // Private channel, one-step: `set bot_channel <name>,<base64psk>` joins a
-    // private (random-key) channel into a free slot and binds the bot to it.
-    // Mirrors the hashtag auto-join below but sources the 128-bit key from the
-    // supplied base64 instead of sha256(name). Comma-separated so meshcli passes
-    // it as a single token (like `set radio f,bw,sf,cr`).
-    const char* comma = strchr(value, ',');
-    if (comma && comma > value) {
-      char chname[32];
-      int nlen = comma - value;
-      if (nlen > (int)sizeof(chname) - 1) nlen = sizeof(chname) - 1;
-      memcpy(chname, value, nlen);
-      chname[nlen] = 0;
-      const char* psk_b64 = comma + 1;
-      uint8_t key[32];
-      int klen = decode_base64((unsigned char*)psk_b64, strlen(psk_b64), key);
-      if (klen != 16 && klen != 32) return false;     // bad/short key
-      for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
-        ChannelDetails d;
-        if (!getChannel(i, d) || d.name[0] != 0) continue; // first free slot
-        ChannelDetails nc;
-        memset(&nc, 0, sizeof(nc));
-        strncpy(nc.name, chname, sizeof(nc.name) - 1);
-        memcpy(nc.channel.secret, key, klen); // 128- or 256-bit key (channel.secret is 32B); setChannel derives hash
-        if (setChannel(i, nc)) {
-          saveChannels();
-          _prefs.bot_channel = (uint8_t)i;
-          savePrefs();
-          return true;
-        }
-        break;
-      }
-      return false; // no free slot
-    }
-
-    // Otherwise treat it as a channel name (ignoring a leading '#').
-    const char* want = (value[0] == '#') ? value + 1 : value;
-    for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
-      ChannelDetails d;
-      if (!getChannel(i, d)) continue;
-      const char* nm = (d.name[0] == '#') ? d.name + 1 : d.name;
-      if (nm[0] && strcmp(nm, want) == 0) {
-        _prefs.bot_channel = (uint8_t)i;
-        savePrefs();
-        return true;
-      }
-    }
-
-    // Not joined yet. For a hashtag channel ("#name") the key is deterministic
-    // -- first 16 bytes of sha256("#name") -- so we can auto-join it into a free
-    // slot. (Private channels use a random key we can't derive from a name.)
-    if (value[0] == '#') {
-      char chname[32];
-      strncpy(chname, value, sizeof(chname) - 1);
-      chname[sizeof(chname) - 1] = 0;
-      for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
-        ChannelDetails d;
-        if (!getChannel(i, d) || d.name[0] != 0) continue; // first free slot
-        ChannelDetails nc;
-        memset(&nc, 0, sizeof(nc));
-        strncpy(nc.name, chname, sizeof(nc.name) - 1);
-        uint8_t full[32];
-        mesh::Utils::sha256(full, sizeof(full), (const uint8_t*)chname, (int)strlen(chname));
-        memcpy(nc.channel.secret, full, 16); // 128-bit hashtag key; setChannel derives hash
-        if (setChannel(i, nc)) {
-          saveChannels();
-          _prefs.bot_channel = (uint8_t)i;
-          savePrefs();
-          return true;
-        }
-        break;
-      }
-    }
-#endif
-    return false; // unknown channel name -> reported as an error to the CLI
+  bool is_bot_ch = strcmp(name, "bot_channel") == 0;
+  bool is_ctl_ch = strcmp(name, "bot_control_channel") == 0;
+  if (is_bot_ch || is_ctl_ch) {
+    int idx = combinedResolveChannelArg(value);
+    if (idx < 0) return false;
+    if (is_bot_ch) _prefs.bot_channel = (uint8_t)idx;
+    else           _prefs.bot_control_channel = (uint8_t)idx;
+    savePrefs();
+    return true;
   }
   return false;
 }
@@ -387,24 +391,27 @@ bool MyMesh::combinedSetVar(const char* name, const char* value) {
 // "bot_enable:..,bot_channel:.." string is built in a local buffer first and
 // only appended if it fits, so a long channel name can never overrun `end`
 // (a prior sensor loop may already have filled the frame close to its cap).
+// Format one "name:<channel>" var into buf+n: the channel's name if joined,
+// its index otherwise, or "off" for the 0xFF sentinel.
+int MyMesh::combinedFormatChannelVar(char* buf, int n, size_t bufsz, const char* name, uint8_t ch) {
+  if (n < 0 || n >= (int)bufsz - 1) return n;   // buffer already full
+  if (ch == 0xFF) return n + snprintf(buf + n, bufsz - n, "%s:off", name);
+#ifdef MAX_GROUP_CHANNELS
+  ChannelDetails d;
+  if (getChannel(ch, d) && d.name[0]) return n + snprintf(buf + n, bufsz - n, "%s:%s", name, d.name);
+#endif
+  return n + snprintf(buf + n, bufsz - n, "%s:%d", name, ch);
+}
+
 char* MyMesh::combinedAppendVars(char* base, char* dp, const char* end) {
   if (!_combined) return dp;
-  char buf[80];
+  char buf[128];
   int n = 0;
   if (dp > base) buf[n++] = ',';
   n += snprintf(buf + n, sizeof(buf) - n, "bot_enable:%d,", _prefs.bot_enabled ? 1 : 0);
-  uint8_t ch = _prefs.bot_channel;
-  if (ch == 0xFF) {
-    n += snprintf(buf + n, sizeof(buf) - n, "bot_channel:off");
-  } else {
-#ifdef MAX_GROUP_CHANNELS
-    ChannelDetails d;
-    if (getChannel(ch, d) && d.name[0]) n += snprintf(buf + n, sizeof(buf) - n, "bot_channel:%s", d.name);
-    else n += snprintf(buf + n, sizeof(buf) - n, "bot_channel:%d", ch);
-#else
-    n += snprintf(buf + n, sizeof(buf) - n, "bot_channel:%d", ch);
-#endif
-  }
+  n = combinedFormatChannelVar(buf, n, sizeof(buf), "bot_channel", _prefs.bot_channel);
+  if (n < (int)sizeof(buf) - 1) n += snprintf(buf + n, sizeof(buf) - n, ",");
+  n = combinedFormatChannelVar(buf, n, sizeof(buf), "bot_control_channel", _prefs.bot_control_channel);
   if (n >= (int)sizeof(buf)) n = sizeof(buf) - 1;   // snprintf clamp (defensive)
   if (n > 0 && n <= (int)(end - dp)) {              // only append if it fully fits
     memcpy(dp, buf, n);
