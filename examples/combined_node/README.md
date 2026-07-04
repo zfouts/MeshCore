@@ -123,7 +123,7 @@ locally over BLE/USB (not over the mesh):
 
 ```
 meshcore-cli get bot_enable bot_channel     # read current values
-meshcore-cli set bot_channel "#lhtx-test"   # answer on a named channel (auto-joins if missing)
+meshcore-cli set bot_channel "#bot"         # answer on a named channel (auto-joins if missing)
 meshcore-cli set bot_channel 0              # ...or by index
 meshcore-cli set bot_channel off            # disable channel bot (DM only)
 meshcore-cli set bot_enable 0               # turn the whole bot off
