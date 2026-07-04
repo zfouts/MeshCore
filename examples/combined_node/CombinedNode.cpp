@@ -18,6 +18,7 @@ extern unsigned int decode_base64(const unsigned char* input, unsigned int input
 
 #if defined(ESP32)
 #include "esp_task_wdt.h"
+#include "esp_idf_version.h"   // ESP_IDF_VERSION_MAJOR (WDT API changed in IDF5)
 #endif
 
 // Piecewise-linear single-cell LiPo discharge curve (resting voltage). Points
@@ -58,7 +59,19 @@ void MyMesh::combinedBegin() {
 
 #if defined(ESP32)
   // Hardware watchdog: panic-reboot if loop() stalls for COMBINED_WDT_TIMEOUT_S.
+#if ESP_IDF_VERSION_MAJOR >= 5
+  // IDF5 (Arduino core 3.x, e.g. ESP32-C6): config-struct API, and the core
+  // has usually already init'ed the TWDT -- reconfigure instead of init.
+  {
+    esp_task_wdt_config_t wdt_cfg = {};
+    wdt_cfg.timeout_ms = COMBINED_WDT_TIMEOUT_S * 1000;
+    wdt_cfg.idle_core_mask = 0;
+    wdt_cfg.trigger_panic = true;
+    if (esp_task_wdt_reconfigure(&wdt_cfg) != ESP_OK) esp_task_wdt_init(&wdt_cfg);
+  }
+#else
   esp_task_wdt_init(COMBINED_WDT_TIMEOUT_S, true);
+#endif
   esp_task_wdt_add(NULL);
   _combined->wdt_on = true;
 #elif defined(NRF52_PLATFORM)
