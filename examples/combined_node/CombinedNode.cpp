@@ -20,6 +20,9 @@ extern unsigned int decode_base64(const unsigned char* input, unsigned int input
 #include "esp_task_wdt.h"
 #include "esp_idf_version.h"   // ESP_IDF_VERSION_MAJOR (WDT API changed in IDF5)
 #endif
+#if defined(WITH_ZIGBEE_METRICS)
+#include "ZigbeeMetrics.h"     // mesh metrics -> Home Assistant (ESP32-C6/H2 zigbee envs)
+#endif
 
 // Piecewise-linear single-cell LiPo discharge curve (resting voltage). Points
 // run high->low; we clamp the ends and interpolate between brackets.
@@ -85,6 +88,12 @@ void MyMesh::combinedBegin() {
   NRF_WDT->TASKS_START = 1;
   _combined->wdt_on = true;
 #endif
+
+#if defined(WITH_ZIGBEE_METRICS)
+  // Start the Zigbee end-device stack (joins/rejoins in its own task; the
+  // mesh loop is never blocked). Prefs are already loaded at this point.
+  zigbeeMetricsBegin(_prefs.node_name);
+#endif
 }
 
 void MyMesh::combinedLoop() {
@@ -143,6 +152,38 @@ void MyMesh::combinedLoop() {
     } else {
       pr.ack = 0;   // gave up; stop tracking
     }
+  }
+#endif
+
+#if defined(WITH_ZIGBEE_METRICS)
+  // Apply an HA-initiated relay toggle (queued by the zigbee task; applied
+  // here so all mesh/prefs writes stay on the main loop).
+  int zb_relay = zigbeeMetricsConsumePendingRelay();
+  if (zb_relay >= 0 && (_prefs.client_repeat != 0) != (zb_relay != 0)) {
+    _prefs.client_repeat = zb_relay ? 1 : 0;
+    savePrefs();
+  }
+
+  // Periodic metric snapshot -> Zigbee attribute reports.
+  static uint32_t next_zb_report_ms = 0;
+  if (millisHasNowPassed(next_zb_report_ms)) {
+    next_zb_report_ms = futureMillis(COMBINED_ZIGBEE_REPORT_S * 1000);
+    ZigbeeMetricsSnapshot snap = {};
+    snap.batt_mv = board.getBattMilliVolts();
+    snap.batt_pct = combinedLipoPercent(snap.batt_mv);
+    snap.uptime_hours = _ms->getMillis() / 3600000.0f;
+    snap.rx_count = _combined->stats.rx_count;
+    snap.relayed = _combined->stats.relayed;
+    snap.dropped = _combined->stats.dropped;
+    uint8_t n = 0;
+    for (int i = 0; i < COMBINED_MAX_NEIGHBOURS; i++)
+      if (_combined->neighbours[i].used) n++;
+    snap.neighbours = n;
+    snap.last_rssi = _combined->last_rssi;
+    snap.last_snr = _combined->last_snr;
+    snap.free_heap = ESP.getFreeHeap();
+    snap.relay_on = _prefs.client_repeat != 0;
+    zigbeeMetricsUpdate(snap);
   }
 #endif
 }
@@ -408,6 +449,12 @@ bool MyMesh::combinedSetVar(const char* name, const char* value) {
     savePrefs();
     return true;
   }
+#if defined(WITH_ZIGBEE_METRICS)
+  if (strcmp(name, "zigbee.reset") == 0 && value[0] == '1') {
+    zigbeeMetricsFactoryReset();   // leaves the network + reboots into pairing
+    return true;                   // (unreached; reset restarts the chip)
+  }
+#endif
   return false;
 }
 
@@ -431,13 +478,17 @@ int MyMesh::combinedFormatChannelVar(char* buf, int n, size_t bufsz, const char*
 
 char* MyMesh::combinedAppendVars(char* base, char* dp, const char* end) {
   if (!_combined) return dp;
-  char buf[128];
+  char buf[160];
   int n = 0;
   if (dp > base) buf[n++] = ',';
   n += snprintf(buf + n, sizeof(buf) - n, "bot_enable:%d,", _prefs.bot_enabled ? 1 : 0);
   n = combinedFormatChannelVar(buf, n, sizeof(buf), "bot_channel", _prefs.bot_channel);
   if (n < (int)sizeof(buf) - 1) n += snprintf(buf + n, sizeof(buf) - n, ",");
   n = combinedFormatChannelVar(buf, n, sizeof(buf), "bot_control_channel", _prefs.bot_control_channel);
+#if defined(WITH_ZIGBEE_METRICS)
+  if (n < (int)sizeof(buf) - 1)
+    n += snprintf(buf + n, sizeof(buf) - n, ",zigbee:%s", zigbeeMetricsConnected() ? "joined" : "joining");
+#endif
   if (n >= (int)sizeof(buf)) n = sizeof(buf) - 1;   // snprintf clamp (defensive)
   if (n > 0 && n <= (int)(end - dp)) {              // only append if it fully fits
     memcpy(dp, buf, n);
