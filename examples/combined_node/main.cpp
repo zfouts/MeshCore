@@ -206,8 +206,17 @@ void setup() {
   #endif
     the_mesh.startInterface(serial_interface);
 #elif defined(ESP32)
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot] spiffs...");
+#endif
   SPIFFS.begin(true);
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot] store...");
+#endif
   store.begin();
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot] mesh.begin...");
+#endif
   the_mesh.begin(
     #ifdef DISPLAY_CLASS
         disp != NULL
@@ -215,8 +224,14 @@ void setup() {
         false
     #endif
   );
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot] mesh ok");
+#endif
 
 #ifdef WIFI_SSID
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot] wifi.begin...");
+#endif
   board.setInhibitSleep(true);   // prevent sleep when WiFi is active
   WiFi.setAutoReconnect(true);
 
@@ -225,13 +240,16 @@ void setup() {
           WIFI_DEBUG_PRINTLN("WiFi disconnected. Flagging for reconnect...");
           wifi_needs_reconnect = true;
       } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-          WIFI_DEBUG_PRINTLN("WiFi connected successfully!");
+          WIFI_DEBUG_PRINTLN("WiFi connected, ip=%s", WiFi.localIP().toString().c_str());
           wifi_needs_reconnect = false;
       }
   });
 
   WiFi.begin(WIFI_SSID, WIFI_PWD);
   serial_interface.begin(TCP_PORT);
+#ifdef COMBINED_BOOT_TRACE
+  Serial.println("[boot] wifi started, tcp listening");
+#endif
 #elif defined(BLE_PIN_CODE)
   serial_interface.begin(BLE_NAME_PREFIX, the_mesh.getNodePrefs()->node_name, the_mesh.getBLEPin());
 #elif defined(SERIAL_RX)

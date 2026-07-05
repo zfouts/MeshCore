@@ -1,17 +1,11 @@
 # combined_node changelog
 
 ## Unreleased
-- **Zigbee metrics bridge** (`Xiao_C6_combined_node_zigbee`, ESP32-C6): the node
-  joins a Home Assistant Zigbee network (ZHA/Z2M) as an end device and reports
-  mesh telemetry as sensor entities -- battery V/%, uptime, rx/relayed/dropped
-  packets, neighbour count, last RSSI/SNR, free heap -- plus an On/Off endpoint
-  bound to the LoRa relay so HA can toggle repeating. `set zigbee.reset 1`
-  re-enters pairing; `get zigbee` reports joined/joining. USB companion, no BLE
-  (Zigbee shares the C6's 2.4GHz radio). Pins pioarduino 55.03.39 (Arduino
-  core 3.3) for ZigbeeAnalog; uses the stock zigbee.csv partition table (NOTE:
-  flashing from a min_spiffs build erases prefs/contacts -- reconfigure after).
-- XIAO ESP32-C6 combined_node support (usb/ble envs), hardware-validated on the
-  Wio-SX1262: IDF5 watchdog path, boot-trace aid, pad pin-probe tool.
+- XIAO ESP32-C6 combined_node support (usb/ble/wifi envs), hardware-validated
+  on the Wio-SX1262: IDF5 watchdog path, default-on 2.4GHz RF-switch fix
+  (upstream left the antenna switch unpowered), boot-trace aid, pad pin-probe
+  and RF scan tools. The wifi env serves the companion protocol over TCP
+  (`meshcli -t <ip>`), like the upstream S3 wifi companion.
 
 This fork maintains `combined_node` (companion + repeater + telemetry/bot) as
 its own firmware line. Releases are cut by pushing a `combined-node-vX.Y.Z` tag,
