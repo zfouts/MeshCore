@@ -109,6 +109,20 @@ void halt() {
 #if defined(ESP32) && defined(WIFI_SSID)
   bool wifi_needs_reconnect = false;
   unsigned long last_wifi_reconnect_attempt = 0;
+  static bool wifi_admin_enabled = true;   // `@name set wifi off` via control channel
+
+  // Strong definition of the control-channel WiFi toggle (weak fallback in
+  // BotCommands.cpp returns false on non-WiFi builds). Runtime-only by design:
+  // a reboot restores WiFi, so a bad toggle can't permanently strand a node.
+  extern "C" bool combinedSetWifiControl(bool enable) {
+    wifi_admin_enabled = enable;
+    if (enable) {
+      WiFi.begin(WIFI_SSID, WIFI_PWD);
+    } else {
+      WiFi.disconnect(true);   // also powers down the WiFi radio
+    }
+    return true;
+  }
 #endif
 
 void setup() {
@@ -293,7 +307,7 @@ void loop() {
 
 #if defined(ESP32) && defined(WIFI_SSID)
   // Safely attempt to reconnect every 10 seconds if flagged
-  if (wifi_needs_reconnect && (millis() - last_wifi_reconnect_attempt > 10000)) {
+  if (wifi_admin_enabled && wifi_needs_reconnect && (millis() - last_wifi_reconnect_attempt > 10000)) {
     WIFI_DEBUG_PRINTLN("Attempting manual WiFi reconnect...");
     WiFi.disconnect();
     WiFi.reconnect();

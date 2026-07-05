@@ -112,6 +112,22 @@ companion app.
     `direct-only`. Deliberately no further auth, and these are not listed in
     `!help`. The bare status queries and all read-only commands work from any
     distance.
+  - `!loc` — the node's location (`lat,lon`, tagged `(gps)` when GPS-sourced,
+    or `not set`). **Control-channel only**: anywhere else the node stays
+    silent as if the command doesn't exist (field nodes are often hidden;
+    only holders of the control-channel key can ask where one lives). Also
+    deliberately absent from `!help`.
+  - **`@<name> set <var> <value>`** (control-channel only) — node-targeted
+    admin, vs. the bare `!relay`/`!ble` which every listening node obeys
+    fleet-wide. Only the named node acts and replies; everyone else stays
+    silent. Name match is case-insensitive and may contain spaces. Vars:
+    - `relay on|off` — packet forwarding (persisted)
+    - `ble on|off` — BLE advertising (persisted; `n/a` on non-BLE builds)
+    - `txpower <dbm>` — LoRa TX power, applied live (persisted)
+    - `location <lat>,<lon>` / `location off` — set/clear node location (persisted)
+    - `wifi on|off` — WiFi radio on WiFi builds (**runtime-only**: a reboot
+      restores WiFi so a bad toggle can't strand a node; `n/a` elsewhere)
+    - e.g. `@Solar-07 set txpower 17`, `@Xiao C6 Combined set wifi off`
   - Replies to direct-message commands are **ACK-tracked and resent** (bounded)
     if lost on a weak link, so `!ping`/`!path` are far more reliable
     (`COMBINED_BOT_REPLY_RETRIES`, default 2).

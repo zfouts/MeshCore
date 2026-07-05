@@ -136,6 +136,19 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
              (int)mv, (int)combinedLipoPercent(mv), (unsigned long)s,
              (unsigned long)_relay_count, (int)sensors.getNumSettings(), hbuf);
 
+  } else if (cmdIs(cmd, "loc")) {
+    // Node location -- sensitive for hidden field nodes, so this ONLY answers
+    // on the control channel (possession of that key is the authorization).
+    // Anywhere else we stay silent, as if the command doesn't exist; it is
+    // also deliberately absent from !help.
+    if (!is_ctl) return false;
+    if (sensors.node_lat == 0.0 && sensors.node_lon == 0.0) {
+      snprintf(reply, sz, "loc: not set");
+    } else {
+      snprintf(reply, sz, "loc: %.6f,%.6f%s", sensors.node_lat, sensors.node_lon,
+               _prefs.gps_enabled ? " (gps)" : "");
+    }
+
   } else if (cmdIs(cmd, "help")) {
     // List the read-only commands this build compiled. The control commands
     // (!relay/!ble on|off, DM+direct-only) are intentionally NOT listed.
@@ -250,6 +263,12 @@ void MyMesh::handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* p
   bool on_bot = _prefs.bot_channel != 0xFF && rxidx == (int)_prefs.bot_channel;
   bool is_ctl = _prefs.bot_control_channel != 0xFF && rxidx == (int)_prefs.bot_control_channel;
   if (!on_bot && !is_ctl) return;                                    // not a channel we answer on
+  if (is_ctl && msg && msg[0] == '@') {
+    // "@<node name> set <var> <value>" -- node-targeted admin, control channel
+    // only. Only the named node acts (and rate-limits); everyone else ignores.
+    handleTargetedSet(channel, sender, msg + 1);
+    return;
+  }
   if (!_combined->bot_limiter.allow((uint32_t)(_ms->getMillis() / 1000))) return; // throttled
   char reply[160];
   if (buildBotReply(msg + 1, pkt, timestamp, sender, false, is_ctl, reply, sizeof(reply))) {
@@ -270,6 +289,99 @@ void MyMesh::handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* p
   }
 }
 #endif
+
+#ifdef WITH_COMBINED_EXTRAS
+// Runtime WiFi enable/disable hook. WiFi builds (main.cpp, #ifdef WIFI_SSID)
+// provide the strong definition; this weak fallback reports "unsupported" on
+// BLE/USB builds so `set wifi` degrades gracefully.
+extern "C" bool combinedSetWifiControl(bool enable);
+extern "C" __attribute__((weak)) bool combinedSetWifiControl(bool) { return false; }
+
+// "@<node name> set <var> <value>" on the control channel: per-node admin,
+// vs the bare fleet-wide !relay/!ble. Name match is case-insensitive and
+// supports spaces in names (everything before " set " is the target). A node
+// that isn't the target stays silent.
+void MyMesh::handleTargetedSet(const mesh::GroupChannel& channel, const char* sender, const char* text) {
+  size_t nlen = strlen(_prefs.node_name);
+  if (nlen == 0 || strncasecmp(text, _prefs.node_name, nlen) != 0) return; // not us
+  const char* p = text + nlen;
+  while (*p == ' ') p++;
+  if (strncmp(p, "set ", 4) != 0) return;   // only `set` verbs for now
+  p += 4;
+  while (*p == ' ') p++;
+
+  if (!_combined->bot_limiter.allow((uint32_t)(_ms->getMillis() / 1000))) return;
+
+  char reply[80];
+  reply[0] = 0;
+
+  if (strncmp(p, "relay ", 6) == 0) {
+    const char* v = p + 6;
+    if (cmdIs(v, "on"))       { _prefs.client_repeat = 1; savePrefs(); snprintf(reply, sizeof(reply), "relay on"); }
+    else if (cmdIs(v, "off")) { _prefs.client_repeat = 0; savePrefs(); snprintf(reply, sizeof(reply), "relay off"); }
+
+  } else if (strncmp(p, "ble ", 4) == 0) {
+#if defined(BLE_PIN_CODE)
+    const char* v = p + 4;
+    if (cmdIs(v, "on"))       { _prefs.ble_enabled = 1; savePrefs(); _serial->enable();  snprintf(reply, sizeof(reply), "ble on"); }
+    else if (cmdIs(v, "off")) { _prefs.ble_enabled = 0; savePrefs(); _serial->disable(); snprintf(reply, sizeof(reply), "ble off"); }
+#else
+    snprintf(reply, sizeof(reply), "ble: n/a on this build");
+#endif
+
+  } else if (strncmp(p, "txpower ", 8) == 0) {
+    int power = atoi(p + 8);
+    if (power < -9 || power > MAX_LORA_TX_POWER) {
+      snprintf(reply, sizeof(reply), "txpower: out of range (max %d)", MAX_LORA_TX_POWER);
+    } else {
+      _prefs.tx_power_dbm = (int8_t)power;
+      savePrefs();
+      radio_driver.setTxPower(_prefs.tx_power_dbm);
+      snprintf(reply, sizeof(reply), "txpower %d", power);
+    }
+
+  } else if (strncmp(p, "location ", 9) == 0) {
+    const char* v = p + 9;
+    if (cmdIs(v, "off")) {
+      sensors.node_lat = 0.0; sensors.node_lon = 0.0;
+      savePrefs();
+      snprintf(reply, sizeof(reply), "location cleared");
+    } else {
+      double lat = 0, lon = 0;
+      if (sscanf(v, "%lf,%lf", &lat, &lon) == 2 &&
+          lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0) {
+        sensors.node_lat = lat; sensors.node_lon = lon;
+        savePrefs();
+        snprintf(reply, sizeof(reply), "location %.6f,%.6f", lat, lon);
+      } else {
+        snprintf(reply, sizeof(reply), "location: want <lat>,<lon> or off");
+      }
+    }
+
+  } else if (strncmp(p, "wifi ", 5) == 0) {
+    const char* v = p + 5;
+    bool want = cmdIs(v, "on");
+    if (!want && !cmdIs(v, "off")) {
+      snprintf(reply, sizeof(reply), "wifi: want on|off");
+    } else if (combinedSetWifiControl(want)) {
+      // runtime-only: not persisted, a reboot restores the build default (on)
+      snprintf(reply, sizeof(reply), "wifi %s (until reboot)", want ? "on" : "off");
+    } else {
+      snprintf(reply, sizeof(reply), "wifi: n/a on this build");
+    }
+
+  } else {
+    snprintf(reply, sizeof(reply), "set: relay|ble|txpower|location|wifi");
+  }
+
+  if (reply[0]) {
+    char tagged[160];
+    snprintf(tagged, sizeof(tagged), "@%s %s: %s", sender[0] ? sender : "?", _prefs.node_name, reply);
+    mesh::GroupChannel ch = channel;
+    sendGroupMessage(getRTCClock()->getCurrentTimeUnique(), ch, _prefs.node_name, tagged, strlen(tagged));
+  }
+}
+#endif // WITH_COMBINED_EXTRAS
 
 // Send a plain-text reply back to a contact, reusing BaseChatMesh's message
 // path (handles flood/direct routing and encryption). When the send expects an

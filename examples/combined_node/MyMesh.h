@@ -274,6 +274,7 @@ private:
   bool combinedSetVar(const char* name, const char* value);
   char* combinedAppendVars(char* base, char* dp, const char* end);
   void handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t timestamp, const char* text);
+  void handleTargetedSet(const mesh::GroupChannel& channel, const char* sender, const char* text);
 #endif
 
   // helpers, short-cuts
