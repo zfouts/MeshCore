@@ -117,6 +117,13 @@ companion app.
     silent as if the command doesn't exist (field nodes are often hidden;
     only holders of the control-channel key can ask where one lives). Also
     deliberately absent from `!help`.
+  - `!wd on|off|` (status) — **wardrive mode**: while on, this node beacons
+    `!path <lat,lon>` to the control channel every 45 s
+    (`COMBINED_WD_INTERVAL_S`); every fleet node that hears it replies with
+    the route it arrived by, so carrying the node around maps mesh coverage,
+    each reply pinned to the beaconed position. Toggling requires a direct
+    DM or the control channel (like `!relay`); runtime-only — a reboot
+    always returns to quiet so a forgotten survey can't drain a node.
   - **`@<name> set <var> <value>`** (control-channel only) — node-targeted
     admin, vs. the bare `!relay`/`!ble` which every listening node obeys
     fleet-wide. Only the named node acts and replies; everyone else stays

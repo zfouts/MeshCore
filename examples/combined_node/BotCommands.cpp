@@ -136,6 +136,37 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
              (int)mv, (int)combinedLipoPercent(mv), (unsigned long)s,
              (unsigned long)_relay_count, (int)sensors.getNumSettings(), hbuf);
 
+#ifdef WITH_COMBINED_EXTRAS
+  } else if (cmdIs(cmd, "wd") && _combined) {
+    // Wardrive mode: while on, the node beacons "!path <lat,lon>" to the
+    // control channel every COMBINED_WD_INTERVAL_S. Every fleet node that
+    // hears it answers with the route it arrived by (the !path handler), so
+    // driving around with this node maps mesh coverage, each reply tagged
+    // with the position beaconed. Runtime-only (never persisted): a reboot
+    // always returns to quiet, so a forgotten survey can't drain a node.
+    const char* arg = cmd + 2;
+    while (*arg == ' ') arg++;
+    if (*arg == 0) {
+      snprintf(reply, sz, "wd %s", _combined->wd_on ? "on" : "off");
+    } else if (!write_ok) {
+      snprintf(reply, sz, is_dm ? "wd: direct-only (you are %u hops away)" : "wd: DM-only",
+               (unsigned)(pkt ? pkt->getPathHashCount() : 0));
+    } else if (cmdIs(arg, "on")) {
+      if (_prefs.bot_control_channel == 0xFF) {
+        snprintf(reply, sz, "wd: control channel not set");
+      } else {
+        _combined->wd_on = true;
+        _combined->next_wd_ms = 0;   // first beacon immediately
+        snprintf(reply, sz, "wd on (beacon !path to control every %ds)", COMBINED_WD_INTERVAL_S);
+      }
+    } else if (cmdIs(arg, "off")) {
+      _combined->wd_on = false;
+      snprintf(reply, sz, "wd off");
+    } else {
+      snprintf(reply, sz, "wd %s", _combined->wd_on ? "on" : "off");
+    }
+#endif
+
   } else if (cmdIs(cmd, "loc")) {
     // Node location -- sensitive for hidden field nodes, so this ONLY answers
     // on the control channel (possession of that key is the authorization).

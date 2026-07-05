@@ -128,6 +128,26 @@ void MyMesh::combinedLoop() {
   }
 #endif
 
+  // Wardrive beacon (`!wd on`): ask the fleet, via the control channel, to
+  // report the route this node's message took -- each reply is a coverage
+  // datapoint for the position we broadcast.
+  if (_combined->wd_on && millisHasNowPassed(_combined->next_wd_ms)) {
+    _combined->next_wd_ms = futureMillis(COMBINED_WD_INTERVAL_S * 1000);
+#ifdef MAX_GROUP_CHANNELS
+    ChannelDetails d;
+    if (_prefs.bot_control_channel != 0xFF &&
+        getChannel(_prefs.bot_control_channel, d) && d.name[0]) {
+      char txt[48];
+      if (sensors.node_lat != 0.0 || sensors.node_lon != 0.0)
+        snprintf(txt, sizeof(txt), "!path %.6f,%.6f", sensors.node_lat, sensors.node_lon);
+      else
+        strcpy(txt, "!path");
+      sendGroupMessage(getRTCClock()->getCurrentTimeUnique(), d.channel,
+                       _prefs.node_name, txt, strlen(txt));
+    }
+#endif
+  }
+
   // Resend an un-ACKed bot reply (bounded) so a single lost packet on a weak
   // link doesn't swallow a !ping/!path answer. processAck() clears pending.ack
   // when the recipient confirms; reusing the original timestamp keeps the ACK
