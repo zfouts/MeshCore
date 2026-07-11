@@ -89,11 +89,10 @@ companion app.
   - `!ping` — `pong` with how this node heard you: SNR, RSSI, hop count (or
     `direct`), and approximate one-way latency
   - `!path` — the complete route this request took to reach the node, as
-    `<name> [#<hops>] <hop>,<hop>,...` — the requester's name, the hop count,
-    and each traversed repeater in order. Each hop shows as a known **name**
-    (this node or a matching contact) where recognised, else the raw hex
-    path-hash. `<name> [#0] direct` when heard straight from the sender.
-    (Short hashes can alias, so name resolution is best-effort.)
+    `<name> [#<hops>] <hash>,<hash>,...` — the requester's name, the hop count,
+    and each traversed repeater's raw hex path-hash (public-key prefix) in
+    order, e.g. `NAME [#8] 90e2,fe27,ebb0,a484,c0ff,ab2f,d1a9,d690`.
+    `<name> [#0] direct` when heard straight from the sender.
   - `!help` — lists the commands this build supports
   - `!info` — node name, firmware version, relay on/off
   - `!uptime` — time since boot
@@ -173,16 +172,54 @@ by name. The bot answers read-only commands on the control channel too.
 Defaults: `bot_enable=1`, `bot_channel=off`, `bot_control_channel=off`. Channel replies go back to the same
 channel; the reply rate-limit applies to channels too.
 
+### WiFi variant (`_wifi` envs, `WITH_RUNTIME_WIFI`, ESP32 boards)
+
+Each ESP32 board has a third env alongside `_usb`/`_ble`: `_wifi` serves the
+companion protocol over a WiFi TCP socket (port 5000) **and** USB. USB is the
+provisioning path — credentials are custom vars, set over the same cable you
+flashed with, persisted, and applied live (no reboot, no recompile):
+
+| Var | Values | Meaning |
+|-----|--------|---------|
+| `wifi_ssid` | ssid, or `-` | WiFi network to join (`-` clears and turns WiFi off) |
+| `wifi_pwd`  | passphrase, or `-` | WPA passphrase (`-` clears = open network) |
+
+```
+meshcore-cli set wifi_ssid MyNetwork set wifi_pwd hunter22   # over USB; applies immediately
+meshcore-cli get                              # ...,wifi_ssid:MyNetwork,wifi:192.168.1.57
+meshcli -t 192.168.1.57                       # then connect over TCP
+meshcore-cli set wifi_ssid -                  # forget creds, WiFi radio off
+```
+
+Notes:
+
+- `get` shows the state (`off` / `connecting` / `admin-off` / the IP once
+  associated). The password itself is never echoed back.
+- Both links are live at once (`SerialMux`): replies go to whichever link the
+  app last talked on. `@name set wifi off` (control channel) only kills the
+  WiFi radio — the USB console survives, and a reboot restores WiFi.
+- An SSID/passphrase of a literal single `-` isn't supported (it's the clear
+  sentinel), and values are stored in plain text in the prefs file, like the
+  rest of the node config.
+- The `_usb` and `_ble` envs have no WiFi code at all (keeps BLE+WiFi radio
+  coexistence and RAM pressure out of the picture); `set wifi_ssid` returns an
+  error there, same as on non-WiFi hardware (nRF52).
+- An optional compile-time `-D WIFI_SSID` / `-D WIFI_PWD` pair still works on a
+  `_wifi` env as the first-boot default, and `set wifi_ssid` overrides it.
+
 ## Build
 
-Supported boards (each has a `_usb` and `_ble` env):
+Supported boards (each has a `_usb` and `_ble` env; ESP32 boards also `_wifi`):
 
 ```
 # Heltec V4 (ESP32-S3)
-pio run -e heltec_v4_combined_node_ble     # or _usb
+pio run -e heltec_v4_combined_node_ble     # or _usb / _wifi
 
 # Seeed XIAO S3 / Wio S3 (ESP32-S3)
-pio run -e Xiao_S3_WIO_combined_node_ble   # or _usb
+pio run -e Xiao_S3_WIO_combined_node_ble   # or _usb / _wifi
+
+# Seeed XIAO C6 (ESP32-C6)
+pio run -e Xiao_C6_combined_node_ble       # or _usb / _wifi
 
 # Seeed XIAO nRF52840
 pio run -e Xiao_nrf52_combined_node_ble    # or _usb

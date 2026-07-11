@@ -290,28 +290,6 @@ void MyMesh::combinedNotifyAck(const uint8_t* ack) {
   }
 }
 
-// Resolve a path-hash entry (hsz bytes, a prefix of a node's public key) to a
-// friendly name for !path: this node, or a known contact whose identity hash
-// matches. Best-effort -- a short (1-2 byte) hash can alias more than one node,
-// and repeaters we've never adverted-heard won't be contacts, so many hops will
-// still fall back to hex at the call site. Returns true and fills `out` on a hit.
-bool MyMesh::resolvePathHash(const uint8_t* hash, uint8_t hsz, char* out, size_t outsz) {
-  if (!out || outsz == 0) return false;
-  if (self_id.isHashMatch(hash, hsz)) {                 // us
-    StrHelper::strncpy(out, _prefs.node_name, outsz);
-    return out[0] != 0;
-  }
-  ContactsIterator it = startContactsIterator();        // a known contact
-  ContactInfo c;
-  while (it.hasNext(this, c)) {
-    if (c.name[0] && c.id.isHashMatch(hash, hsz)) {
-      StrHelper::strncpy(out, c.name, outsz);
-      return out[0] != 0;
-    }
-  }
-  return false;
-}
-
 // --- meshcore-cli custom vars (CMD_GET/SET_CUSTOM_VARS) -----------------------
 
 // Resolve a channel argument to a channel index. Accepts: "off"/"none" (0xFF),
@@ -410,6 +388,14 @@ int MyMesh::combinedResolveChannelArg(const char* value) {
   return -1; // unknown channel name -> reported as an error to the CLI
 }
 
+// Runtime-WiFi hooks. Strong definitions live in main.cpp on ESP32 builds with
+// WITH_RUNTIME_WIFI; these weak fallbacks make `set wifi_ssid` an error (and
+// hide the wifi status var) on builds without WiFi hardware (nRF52 etc).
+extern "C" bool combinedApplyWifi(const char* ssid, const char* pwd);
+extern "C" __attribute__((weak)) bool combinedApplyWifi(const char*, const char*) { return false; }
+extern "C" bool combinedWifiStatus(char* buf, size_t bufsz);
+extern "C" __attribute__((weak)) bool combinedWifiStatus(char*, size_t) { return false; }
+
 // `set bot_enable 0|1`, `set bot_channel <idx|off|name|#tag|name,b64psk>`,
 // `set bot_control_channel <same syntax>`. Returns true if handled.
 bool MyMesh::combinedSetVar(const char* name, const char* value) {
@@ -417,6 +403,23 @@ bool MyMesh::combinedSetVar(const char* name, const char* value) {
 
   if (strcmp(name, "bot_enable") == 0) {
     _prefs.bot_enabled = (value[0] == '1') ? 1 : 0;
+    savePrefs();
+    return true;
+  }
+  bool is_ssid = strcmp(name, "wifi_ssid") == 0;
+  if (is_ssid || strcmp(name, "wifi_pwd") == 0) {
+    // `-` clears (meshcli can't send an empty value); an SSID/password of a
+    // literal single dash is not supported
+    const char* v = (strcmp(value, "-") == 0) ? "" : value;
+    char* dest = is_ssid ? _prefs.wifi_ssid : _prefs.wifi_pwd;
+    size_t destsz = is_ssid ? sizeof(_prefs.wifi_ssid) : sizeof(_prefs.wifi_pwd);
+    char old[sizeof(_prefs.wifi_pwd)];
+    StrHelper::strzcpy(old, dest, destsz);
+    StrHelper::strzcpy(dest, v, destsz);
+    if (!combinedApplyWifi(_prefs.wifi_ssid, _prefs.wifi_pwd)) {  // no WiFi on this build
+      StrHelper::strzcpy(dest, old, destsz);
+      return false;
+    }
     savePrefs();
     return true;
   }
@@ -453,13 +456,19 @@ int MyMesh::combinedFormatChannelVar(char* buf, int n, size_t bufsz, const char*
 
 char* MyMesh::combinedAppendVars(char* base, char* dp, const char* end) {
   if (!_combined) return dp;
-  char buf[160];
+  char buf[224];
   int n = 0;
   if (dp > base) buf[n++] = ',';
   n += snprintf(buf + n, sizeof(buf) - n, "bot_enable:%d,", _prefs.bot_enabled ? 1 : 0);
   n = combinedFormatChannelVar(buf, n, sizeof(buf), "bot_channel", _prefs.bot_channel);
   if (n < (int)sizeof(buf) - 1) n += snprintf(buf + n, sizeof(buf) - n, ",");
   n = combinedFormatChannelVar(buf, n, sizeof(buf), "bot_control_channel", _prefs.bot_control_channel);
+  char wifi_state[40];
+  if (n < (int)sizeof(buf) - 1 && combinedWifiStatus(wifi_state, sizeof(wifi_state))) {
+    // ssid + connection state only -- the password is never echoed back
+    n += snprintf(buf + n, sizeof(buf) - n, ",wifi_ssid:%s,wifi:%s",
+                  _prefs.wifi_ssid[0] ? _prefs.wifi_ssid : "off", wifi_state);
+  }
   if (n >= (int)sizeof(buf)) n = sizeof(buf) - 1;   // snprintf clamp (defensive)
   if (n > 0 && n <= (int)(end - dp)) {              // only append if it fully fits
     memcpy(dp, buf, n);

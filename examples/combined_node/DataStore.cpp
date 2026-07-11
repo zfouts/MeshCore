@@ -237,6 +237,10 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     file.read((uint8_t *)&_prefs.bot_channel, sizeof(_prefs.bot_channel));                 // 138
     file.read((uint8_t *)&_prefs.ble_enabled, sizeof(_prefs.ble_enabled));                 // 139 (combined_node; absent in old files -> default kept)
     file.read((uint8_t *)&_prefs.bot_control_channel, sizeof(_prefs.bot_control_channel)); // 140 (combined_node; absent in old files -> default kept)
+    file.read((uint8_t *)_prefs.wifi_ssid, sizeof(_prefs.wifi_ssid));                      // 141 (combined_node; absent in old files -> default kept)
+    file.read((uint8_t *)_prefs.wifi_pwd, sizeof(_prefs.wifi_pwd));                        // 174
+    _prefs.wifi_ssid[sizeof(_prefs.wifi_ssid) - 1] = 0;   // in case of a truncated file
+    _prefs.wifi_pwd[sizeof(_prefs.wifi_pwd) - 1] = 0;
 
     file.close();
   }
@@ -281,6 +285,8 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.bot_channel, sizeof(_prefs.bot_channel));                 // 138
     file.write((uint8_t *)&_prefs.ble_enabled, sizeof(_prefs.ble_enabled));                 // 139 (combined_node)
     file.write((uint8_t *)&_prefs.bot_control_channel, sizeof(_prefs.bot_control_channel)); // 140 (combined_node)
+    file.write((uint8_t *)_prefs.wifi_ssid, sizeof(_prefs.wifi_ssid));                      // 141 (combined_node)
+    file.write((uint8_t *)_prefs.wifi_pwd, sizeof(_prefs.wifi_pwd));                        // 174
 
     file.close();
   }

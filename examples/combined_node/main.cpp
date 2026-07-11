@@ -35,7 +35,30 @@ static uint32_t _atoi(const char* sp) {
 #endif
 
 #ifdef ESP32
-  #ifdef WIFI_SSID
+  #ifdef WITH_RUNTIME_WIFI
+    // BLE/USB primary + a WiFi TCP console provisioned at runtime via
+    // `set wifi_ssid <ssid>` / `set wifi_pwd <pwd>` (meshcli), muxed into the
+    // single companion endpoint. Compile-time WIFI_SSID is just the first-boot
+    // default (see MyMesh constructor).
+    #include <helpers/esp32/SerialWifiInterface.h>
+    SerialWifiInterface wifi_interface;
+    #ifndef TCP_PORT
+      #define TCP_PORT 5000
+    #endif
+    #ifdef BLE_PIN_CODE
+      #include <helpers/esp32/SerialBLEInterface.h>
+      SerialBLEInterface primary_interface;
+    #elif defined(SERIAL_RX)
+      #include <helpers/ArduinoSerialInterface.h>
+      ArduinoSerialInterface primary_interface;
+      HardwareSerial companion_serial(1);
+    #else
+      #include <helpers/ArduinoSerialInterface.h>
+      ArduinoSerialInterface primary_interface;
+    #endif
+    #include "SerialMux.h"
+    SerialMux serial_interface(primary_interface, wifi_interface);
+  #elif defined(WIFI_SSID)
     #include <helpers/esp32/SerialWifiInterface.h>
     SerialWifiInterface serial_interface;
     #ifndef TCP_PORT
@@ -106,11 +129,80 @@ void halt() {
 }
 
 /* WIFI RECONNECT TRACKERS */
-#if defined(ESP32) && defined(WIFI_SSID)
+#if defined(ESP32) && (defined(WITH_RUNTIME_WIFI) || defined(WIFI_SSID))
   bool wifi_needs_reconnect = false;
   unsigned long last_wifi_reconnect_attempt = 0;
   static bool wifi_admin_enabled = true;   // `@name set wifi off` via control channel
 
+  static void wifiRegisterEvents() {
+    WiFi.setAutoReconnect(true);
+    WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
+        if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+            WIFI_DEBUG_PRINTLN("WiFi disconnected. Flagging for reconnect...");
+            wifi_needs_reconnect = true;
+        } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+            WIFI_DEBUG_PRINTLN("WiFi connected, ip=%s", WiFi.localIP().toString().c_str());
+            wifi_needs_reconnect = false;
+        }
+    });
+  }
+#endif
+
+#if defined(ESP32) && defined(WITH_RUNTIME_WIFI)
+  static bool wifi_started = false;      // TCP server + event hooks are one-time
+  static bool wifi_has_creds = false;
+
+  // Strong definition (weak fallback in CombinedNode.cpp errors out on builds
+  // without WiFi hardware). (Re)applies credentials at runtime -- called at
+  // boot from saved prefs and from `set wifi_ssid` / `set wifi_pwd`. An empty
+  // ssid turns WiFi off.
+  extern "C" bool combinedApplyWifi(const char* ssid, const char* pwd) {
+    if (ssid[0] == 0) {
+      wifi_has_creds = false;
+      wifi_needs_reconnect = false;
+      wifi_interface.disable();          // mux stops polling the TCP console
+      WiFi.disconnect(true);             // also powers down the WiFi radio
+      if (wifi_started) board.setInhibitSleep(false);
+      return true;
+    }
+    if (!wifi_started) {
+      wifi_started = true;
+      wifiRegisterEvents();
+      wifi_interface.begin(TCP_PORT);
+    }
+    board.setInhibitSleep(true);         // prevent sleep when WiFi is active
+    wifi_interface.enable();
+    wifi_has_creds = true;
+    wifi_admin_enabled = true;
+    wifi_needs_reconnect = false;
+    WiFi.disconnect();
+    WiFi.begin(ssid, pwd[0] ? pwd : NULL);   // NULL = open network
+    return true;
+  }
+
+  extern "C" bool combinedWifiStatus(char* buf, size_t bufsz) {
+    if (!wifi_has_creds)                    snprintf(buf, bufsz, "off");
+    else if (!wifi_admin_enabled)           snprintf(buf, bufsz, "admin-off");
+    else if (WiFi.status() == WL_CONNECTED) snprintf(buf, bufsz, "%s", WiFi.localIP().toString().c_str());
+    else                                    snprintf(buf, bufsz, "connecting");
+    return true;
+  }
+
+  // `@name set wifi on|off` via control channel. Runtime-only by design: a
+  // reboot restores WiFi, so a bad toggle can't permanently strand a node.
+  extern "C" bool combinedSetWifiControl(bool enable) {
+    if (!wifi_has_creds) return false;   // nothing provisioned to toggle
+    wifi_admin_enabled = enable;
+    if (enable) {
+      auto p = the_mesh.getNodePrefs();
+      WiFi.begin(p->wifi_ssid, p->wifi_pwd[0] ? p->wifi_pwd : NULL);
+    } else {
+      wifi_needs_reconnect = false;
+      WiFi.disconnect(true);   // also powers down the WiFi radio
+    }
+    return true;
+  }
+#elif defined(ESP32) && defined(WIFI_SSID)
   // Strong definition of the control-channel WiFi toggle (weak fallback in
   // BotCommands.cpp returns false on non-WiFi builds). Runtime-only by design:
   // a reboot restores WiFi, so a bad toggle can't permanently strand a node.
@@ -242,22 +334,33 @@ void setup() {
   Serial.println("[boot] mesh ok");
 #endif
 
-#ifdef WIFI_SSID
+#ifdef WITH_RUNTIME_WIFI
+  #ifdef BLE_PIN_CODE
+  primary_interface.begin(BLE_NAME_PREFIX, the_mesh.getNodePrefs()->node_name, the_mesh.getBLEPin());
+  #elif defined(SERIAL_RX)
+  companion_serial.setPins(SERIAL_RX, SERIAL_TX);
+  companion_serial.begin(115200);
+  primary_interface.begin(companion_serial);
+  #else
+  primary_interface.begin(Serial);
+  #endif
+  // bring up the WiFi TCP console if credentials were provisioned (saved
+  // prefs, or a compile-time WIFI_SSID first-boot default)
+  if (the_mesh.getNodePrefs()->wifi_ssid[0]) {
+#ifdef COMBINED_BOOT_TRACE
+    Serial.println("[boot] wifi.begin...");
+#endif
+    combinedApplyWifi(the_mesh.getNodePrefs()->wifi_ssid, the_mesh.getNodePrefs()->wifi_pwd);
+#ifdef COMBINED_BOOT_TRACE
+    Serial.println("[boot] wifi started, tcp listening");
+#endif
+  }
+#elif defined(WIFI_SSID)
 #ifdef COMBINED_BOOT_TRACE
   Serial.println("[boot] wifi.begin...");
 #endif
   board.setInhibitSleep(true);   // prevent sleep when WiFi is active
-  WiFi.setAutoReconnect(true);
-
-  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
-      if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-          WIFI_DEBUG_PRINTLN("WiFi disconnected. Flagging for reconnect...");
-          wifi_needs_reconnect = true;
-      } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-          WIFI_DEBUG_PRINTLN("WiFi connected, ip=%s", WiFi.localIP().toString().c_str());
-          wifi_needs_reconnect = false;
-      }
-  });
+  wifiRegisterEvents();
 
   WiFi.begin(WIFI_SSID, WIFI_PWD);
   serial_interface.begin(TCP_PORT);
@@ -305,9 +408,14 @@ void loop() {
 #endif
   }
 
-#if defined(ESP32) && defined(WIFI_SSID)
+#if defined(ESP32) && (defined(WITH_RUNTIME_WIFI) || defined(WIFI_SSID))
+  #ifdef WITH_RUNTIME_WIFI
+  bool wifi_provisioned = wifi_has_creds;
+  #else
+  bool wifi_provisioned = true;
+  #endif
   // Safely attempt to reconnect every 10 seconds if flagged
-  if (wifi_admin_enabled && wifi_needs_reconnect && (millis() - last_wifi_reconnect_attempt > 10000)) {
+  if (wifi_provisioned && wifi_admin_enabled && wifi_needs_reconnect && (millis() - last_wifi_reconnect_attempt > 10000)) {
     WIFI_DEBUG_PRINTLN("Attempting manual WiFi reconnect...");
     WiFi.disconnect();
     WiFi.reconnect();

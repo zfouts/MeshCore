@@ -1,6 +1,20 @@
 # combined_node changelog
 
 ## Unreleased
+- `!path` hops are always the raw hex path-hash (public-key prefix) again --
+  the best-effort name resolution added in v0.2.0 is removed (names hid the
+  key prefixes, and short hashes could alias to the wrong contact anyway).
+- `_wifi` envs for all ESP32 boards (`WITH_RUNTIME_WIFI`; new on Heltec V4 and
+  XIAO S3, reworked on XIAO C6): companion over WiFi TCP (port 5000) **and**
+  USB (`SerialMux` fans one companion endpoint over both; replies follow the
+  last-active link). Credentials are runtime custom vars provisioned over the
+  USB cable — `set wifi_ssid <ssid>` / `set wifi_pwd <pwd>` persists and
+  applies live, no reboot/recompile; `-` clears (WiFi off); `get` reports
+  `wifi_ssid` + `wifi` state (IP when associated), never the password.
+  Compile-time `WIFI_SSID`/`WIFI_PWD` demoted to an optional first-boot
+  default. `_usb`/`_ble` envs carry no WiFi code (no BLE+WiFi coexistence);
+  `set wifi_ssid` errors there and on nRF52. New NodePrefs fields persisted
+  at offsets 141/174. CI release builds include the `_wifi` suffix.
 - XIAO ESP32-C6 combined_node support (usb/ble/wifi envs), hardware-validated
   on the Wio-SX1262: IDF5 watchdog path, default-on 2.4GHz RF-switch fix
   (upstream left the antenna switch unpowered), boot-trace aid, pad pin-probe

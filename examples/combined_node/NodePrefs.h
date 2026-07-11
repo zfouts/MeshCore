@@ -38,4 +38,6 @@ struct NodePrefs {  // persisted to file
   uint8_t bot_channel;   // combined_node: group channel index the bot answers on (0xFF = off)
   uint8_t ble_enabled;   // combined_node: BLE advertising enable (0/1) -- toggled via `!ble on/off`
   uint8_t bot_control_channel; // combined_node: channel index authorized for control writes (0xFF = off)
+  char wifi_ssid[33];    // combined_node: WiFi STA SSID, set via `set wifi_ssid` ("" = WiFi off)
+  char wifi_pwd[65];     // combined_node: WiFi passphrase, set via `set wifi_pwd` ("" = open network)
 };

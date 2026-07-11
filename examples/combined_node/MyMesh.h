@@ -243,10 +243,6 @@ private:
   bool handleBotCommand(const ContactInfo& from, mesh::Packet* pkt, uint32_t sender_timestamp, const char* text);
   bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, const char* sender_name, bool is_dm, bool is_ctl, char* reply, size_t sz);
   void sendBotReply(const ContactInfo& to, const char* text);
-  // Resolve a path-hash entry (hsz bytes) to a known name -- this node, or a
-  // contact whose identity hash matches. Fills `out`, returns true on a hit.
-  // Short (1-2 byte) hashes can alias, so this is a best-effort convenience.
-  bool resolvePathHash(const uint8_t* hash, uint8_t hsz, char* out, size_t outsz);
   uint32_t _relay_count = 0; // packets relayed since boot (for bot telemetry)
 #endif
 #ifdef WITH_RELAY_POLICY

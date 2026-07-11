@@ -917,6 +917,14 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.bot_channel = 0xFF;    // channel bot off until configured (DM only)
   _prefs.ble_enabled = 1;       // BLE advertising on by default (toggle via `!ble off`)
   _prefs.bot_control_channel = 0xFF; // control channel off until configured
+#ifdef WIFI_SSID
+  // compile-time creds (e.g. the C6 wifi env) are just the first-boot default;
+  // `set wifi_ssid` / `set wifi_pwd` via meshcli override and persist
+  StrHelper::strzcpy(_prefs.wifi_ssid, WIFI_SSID, sizeof(_prefs.wifi_ssid));
+  #ifdef WIFI_PWD
+  StrHelper::strzcpy(_prefs.wifi_pwd, WIFI_PWD, sizeof(_prefs.wifi_pwd));
+  #endif
+#endif
 #endif
 #if defined(WITH_COMBINED_EXTRAS) && (ENV_INCLUDE_GPS == 1)
   _prefs.gps_enabled = 1;                       // mobile node: track position from GPS

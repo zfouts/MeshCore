@@ -82,10 +82,9 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
     //   <name> [#<hops>] <hash>,<hash>,...
     // where <name> is the requester, <hops> is how many repeaters relayed it,
     // and each <hash> is one path-hash entry (getPathHashSize() bytes -- the
-    // leading bytes of that repeater's public-key hash) in traversal order.
+    // leading bytes of that repeater's public-key hash) in traversal order,
+    // always as raw hex so hops can be matched against key prefixes directly.
     // A direct (0-hop) packet was heard straight from the sender, no relay.
-    // Each hop is shown as a known name where we recognise the repeater
-    // (this node or a contact), else the raw hex hash.
     const char* who = (sender_name && sender_name[0]) ? sender_name : "?";
     uint8_t hops = pkt ? pkt->getPathHashCount() : 0;
     uint8_t hsz  = pkt ? pkt->getPathHashSize() : 1;
@@ -96,12 +95,6 @@ bool MyMesh::buildBotReply(const char* cmd, mesh::Packet* pkt,
       const uint8_t* p = pkt->path;
       for (uint8_t i = 0; i < hops && n < (int)sz - 1; i++) {
         n += snprintf(reply + n, sz - n, i == 0 ? " " : ",");
-#ifdef WITH_COMBINED_EXTRAS
-        char nm[24];
-        if (resolvePathHash(p, hsz, nm, sizeof(nm))) {
-          n += snprintf(reply + n, sz - n, "%s", nm);
-        } else
-#endif
         for (uint8_t b = 0; b < hsz && n < (int)sz - 1; b++)
           n += snprintf(reply + n, sz - n, "%02x", p[b]);
         p += hsz;

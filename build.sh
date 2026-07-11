@@ -243,9 +243,10 @@ build_room_server_firmwares() {
 build_combined_node_firmwares() {
 
   # build all combined_node firmwares (companion + repeater + bot; this fork's
-  # own variant). Envs end with _combined_node_{usb,ble,solar}.
+  # own variant). Envs end with _combined_node_{usb,ble,wifi,solar}.
   build_all_firmwares_by_suffix "_combined_node_usb"
   build_all_firmwares_by_suffix "_combined_node_ble"
+  build_all_firmwares_by_suffix "_combined_node_wifi"
   build_all_firmwares_by_suffix "_combined_node_solar"
 
 }
