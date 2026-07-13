@@ -94,11 +94,14 @@ companion app.
     and each traversed repeater's raw hex path-hash (public-key prefix) in
     order, e.g. `NAME [8h] 90e2,fe27,ebb0,a484,c0ff,ab2f,d1a9,d690`.
     `<name> [0h] direct` when heard straight from the sender.
-    On `_wifi` builds with a mesh-observer configured (`set obs_url
+    On `_wifi` builds with an aggregator configured (`set obs_url
     <base-url>` / `set obs_token <token>` over meshcli, `-` clears), the
     node also POSTs the hop chain to `/api/device/path` and appends the
-    short **map URL** it gets back — the observer resolves each hash to a
+    short **map URL** it gets back — the aggregator resolves each hash to a
     located node (disambiguating by chain geometry) and draws the route.
+    Run your own: **[txme.sh](https://github.com/zfouts/txme.sh)** is the
+    open-source aggregator that implements the device path API this bot
+    speaks (see its README for `DEVICE_TOKEN` / deployment setup).
     Wardrive beacons (`!path <lat,lon>`) forward the surveyor's position so
     the map anchors both ends. Fails soft: no WiFi / no observer / timeout
     just means the plain hex reply. NOTE: the HTTP call blocks the radio
@@ -167,7 +170,8 @@ companion app.
       builds without GPS)
     - `advert_interval <secs>` — periodic-advert cadence, `0` = off
       (**runtime-only**: a reboot restores the build default)
-    - `obs_url <url>` / `obs_token [label:]token` — mesh-observer config for
+    - `obs_url <url>` / `obs_token [label:]token` —
+      [txme.sh](https://github.com/zfouts/txme.sh) aggregator config for
       `!path` map links, provisionable over the mesh (no USB cable per node).
       The token value may be pasted exactly as it appears in the observer's
       labelled `DEVICE_TOKEN` secret (`garden:a1b2…`) — the label is stripped,
