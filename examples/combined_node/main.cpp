@@ -138,7 +138,10 @@ void halt() {
     WiFi.setAutoReconnect(true);
     WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info){
         if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-            WIFI_DEBUG_PRINTLN("WiFi disconnected. Flagging for reconnect...");
+            // reason codes: 2 AUTH_EXPIRE, 15 4WAY_HANDSHAKE_TIMEOUT (usually a
+            // wrong password), 201 NO_AP_FOUND, 202 AUTH_FAIL, 203 ASSOC_FAIL
+            WIFI_DEBUG_PRINTLN("WiFi disconnected (reason %u). Flagging for reconnect...",
+                               (unsigned)info.wifi_sta_disconnected.reason);
             wifi_needs_reconnect = true;
         } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
             WIFI_DEBUG_PRINTLN("WiFi connected, ip=%s", WiFi.localIP().toString().c_str());
@@ -149,7 +152,8 @@ void halt() {
 #endif
 
 #if defined(ESP32) && defined(WITH_RUNTIME_WIFI)
-  static bool wifi_started = false;      // TCP server + event hooks are one-time
+  static bool wifi_started = false;         // event hooks are one-time
+  static bool wifi_server_started = false;  // TCP server is one-time, after WiFi.begin
   static bool wifi_has_creds = false;
 
   // Strong definition (weak fallback in CombinedNode.cpp errors out on builds
@@ -168,15 +172,22 @@ void halt() {
     if (!wifi_started) {
       wifi_started = true;
       wifiRegisterEvents();
-      wifi_interface.begin(TCP_PORT);
     }
     board.setInhibitSleep(true);         // prevent sleep when WiFi is active
-    wifi_interface.enable();
     wifi_has_creds = true;
     wifi_admin_enabled = true;
     wifi_needs_reconnect = false;
     WiFi.disconnect();
     WiFi.begin(ssid, pwd[0] ? pwd : NULL);   // NULL = open network
+    // The TCP server may only start once WiFi.begin has brought up the network
+    // stack -- opening the socket before that crashes and reboots the node
+    // (hardware-bitten on XIAO S3), which is also why it can't live in
+    // wifiRegisterEvents() above.
+    if (!wifi_server_started) {
+      wifi_server_started = true;
+      wifi_interface.begin(TCP_PORT);
+    }
+    wifi_interface.enable();
     return true;
   }
 
@@ -201,6 +212,78 @@ void halt() {
       WiFi.disconnect(true);   // also powers down the WiFi radio
     }
     return true;
+  }
+
+  #include <HTTPClient.h>
+  #include <WiFiClientSecure.h>
+
+  // JSON-safe copy of a node/sender name: drop the two characters that could
+  // break out of a snprintf-built JSON string.
+  static void jsonSanitize(const char* in, char* out, size_t outsz) {
+    size_t o = 0;
+    for (const char* p = in ? in : ""; *p && o < outsz - 1; p++)
+      if (*p != '"' && *p != '\\') out[o++] = *p;
+    out[o] = 0;
+  }
+
+  // `!path` map link: POST the hop chain to the mesh-observer device API
+  // (`set obs_url` / `set obs_token`) and return the short URL it mints.
+  // BLOCKING for up to ~5s including a TLS handshake -- the radio is not
+  // serviced meanwhile. Bot replies are rate-limited and !path is a human
+  // command, so the stall is accepted; everything fails soft to the plain
+  // hex reply. Strong definition; weak fallback in CombinedNode.cpp.
+  extern "C" bool combinedPathShortUrl(const char* hashes, const char* origin,
+                                       const char* requester_pos, const char* reporter,
+                                       const char* requester, char* out, size_t outsz) {
+    auto p = the_mesh.getNodePrefs();
+    if (!p->obs_url[0] || WiFi.status() != WL_CONNECTED) return false;
+
+    char url[112];
+    snprintf(url, sizeof(url), "%s/api/device/path", p->obs_url);
+    char rep[33], req[33];
+    jsonSanitize(reporter, rep, sizeof(rep));
+    jsonSanitize(requester, req, sizeof(req));
+    char body[288];
+    int n = snprintf(body, sizeof(body), "{\"h\":\"%s\"", hashes);
+    if (origin && origin[0])         n += snprintf(body + n, sizeof(body) - n, ",\"o\":\"%s\"", origin);
+    if (requester_pos && requester_pos[0]) n += snprintf(body + n, sizeof(body) - n, ",\"q\":\"%s\"", requester_pos);
+    if (rep[0])                      n += snprintf(body + n, sizeof(body) - n, ",\"n\":\"%s\"", rep);
+    if (req[0])                      n += snprintf(body + n, sizeof(body) - n, ",\"r\":\"%s\"", req);
+    if (n >= (int)sizeof(body) - 2) return false;   // truncated -> don't send garbage
+    n += snprintf(body + n, sizeof(body) - n, "}");
+
+    HTTPClient http;
+    WiFiClientSecure tls;
+    bool begun;
+    if (strncmp(p->obs_url, "https:", 6) == 0) {
+      tls.setInsecure();   // no CA bundle on-device; the device token is the auth
+      begun = http.begin(tls, url);
+    } else {
+      begun = http.begin(url);
+    }
+    if (!begun) return false;
+    http.setConnectTimeout(2500);
+    http.setTimeout(3000);
+    http.addHeader("Content-Type", "application/json");
+    if (p->obs_token[0]) http.addHeader("X-Device-Token", p->obs_token);
+
+    bool found = false;
+    int code = http.POST((uint8_t*)body, n);
+    if (code == 200) {
+      String resp = http.getString();
+      int i = resp.indexOf("\"url\":\"");
+      if (i >= 0) {
+        int e = resp.indexOf('"', i + 7);
+        int len = e - (i + 7);
+        if (e > i && len > 0 && len < (int)outsz) {
+          memcpy(out, resp.c_str() + i + 7, len);
+          out[len] = 0;
+          found = true;
+        }
+      }
+    }
+    http.end();
+    return found;
   }
 #elif defined(ESP32) && defined(WIFI_SSID)
   // Strong definition of the control-channel WiFi toggle (weak fallback in

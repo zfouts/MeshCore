@@ -14,9 +14,7 @@ All bot/relay/telemetry logic lives here in `BotCommands.cpp`. The only changes
 in `companion_radio` are small `#ifdef WITH_BOT_COMMANDS` hooks that are inert
 in every existing environment:
 
-- `MyMesh.h` — declares `handleBotCommand()`, `sendBotReply()`, `_relay_count`.
-- `MyMesh.cpp::onMessageRecv()` — dispatches incoming DMs to the bot (the
-  message is still delivered to the companion app as normal).
+- `MyMesh.h` — declares `buildBotReply()`, `_relay_count`.
 - `MyMesh.cpp::allowPacketForward()` — counts relayed packets.
 - `MyMesh` constructor — enables relay (`client_repeat`) by default on first
   boot (gated by `RELAY_DEFAULT_ON`).
@@ -83,34 +81,66 @@ companion app.
   channels, telemetry requests.
 - **Relay**: `client_repeat` defaults on + repeater-grade `RelayPolicy`
   (limits via build flags). Relay on/off still toggleable from the companion app.
-- **Bot commands**: a message beginning with `!` is auto-replied to — in a
-  **direct message** always, and in a **group channel** if that channel is set
-  as the bot channel (see below). Unrecognised commands are ignored silently.
+- **Bot commands**: a **group-channel** message beginning with `!` is
+  auto-replied to, on any configured bot channel (multiple supported — `set
+  bot_channel +#bot` adds one) or the control channel (see below). Replies go
+  back to the channel the request arrived on. **Direct messages are ignored
+  entirely** — a `!` DM is just a chat message to the app. Unrecognised
+  commands are ignored silently.
   - `!ping` — `pong` with how this node heard you: SNR, RSSI, hop count (or
     `direct`), and approximate one-way latency
   - `!path` — the complete route this request took to reach the node, as
-    `<name> [#<hops>] <hash>,<hash>,...` — the requester's name, the hop count,
+    `<name> [<hops>h] <hash>,<hash>,...` — the requester's name, the hop count,
     and each traversed repeater's raw hex path-hash (public-key prefix) in
-    order, e.g. `NAME [#8] 90e2,fe27,ebb0,a484,c0ff,ab2f,d1a9,d690`.
-    `<name> [#0] direct` when heard straight from the sender.
-  - `!help` — lists the commands this build supports
+    order, e.g. `NAME [8h] 90e2,fe27,ebb0,a484,c0ff,ab2f,d1a9,d690`.
+    `<name> [0h] direct` when heard straight from the sender.
+    On `_wifi` builds with a mesh-observer configured (`set obs_url
+    <base-url>` / `set obs_token <token>` over meshcli, `-` clears), the
+    node also POSTs the hop chain to `/api/device/path` and appends the
+    short **map URL** it gets back — the observer resolves each hash to a
+    located node (disambiguating by chain geometry) and draws the route.
+    Wardrive beacons (`!path <lat,lon>`) forward the surveyor's position so
+    the map anchors both ends. Fails soft: no WiFi / no observer / timeout
+    just means the plain hex reply. NOTE: the HTTP call blocks the radio
+    for up to ~5 s; HTTPS is accepted without certificate validation (no CA
+    bundle on-device — the device token is the auth).
+  - `!help` — lists the commands this build supports. **Control-channel
+    only**: on the bot channel the node stays silent, so the command list
+    isn't advertised.
   - `!info` — node name, firmware version, relay on/off
   - `!uptime` — time since boot
   - `!telemetry` — battery mV, uptime, packets relayed, sensor count
   - `!stats` — rx / relayed / dropped / uptime / battery
   - `!neighbors` — directly-heard nodes and how long ago
+  - `!heard <name|hex>` — when this node last directly heard one station, by
+    (partial, case-insensitive) name or hex pubkey-prefix — `!path` hop
+    hashes paste in as-is
+  - `!batt` — battery with direction, not just a snapshot: current mV/%,
+    min/max since boot, and the change over the last hour ("charging fine"
+    vs "dying by Thursday")
+  - `!boot` — why and how often the node booted: reset cause (`watchdog`,
+    `brownout`, `wake-charged` = solar dawn revival, …) plus a persisted
+    boot counter, so a brownout-looping sealed node is visible from the mesh
+  - `!rf` — radio params in one line (freq / sf / bw / cr / txpower), for
+    fleet-wide config audits
+  - `!time` — RTC time and drift vs the sender's timestamp (includes flight
+    time; seconds-level). `!time sync` (**control-channel only**) adopts the
+    sender's timestamp to pull a wandered clock back in line
+  - `!wifi` — WiFi status on `_wifi` builds (IP when associated); `n/a`
+    elsewhere. Read-only; toggling stays with `@name set wifi`
+  - `!advert` (**control-channel only**) — re-announce NOW with a flood
+    advert, instead of waiting out the periodic advert timer (after moving a
+    node, rotating identity, onboarding new clients)
   - `!relay on` / `!relay off` / `!relay` — enable/disable packet forwarding;
     takes effect immediately and is persisted. Bare `!relay` reports state.
-  - **Control commands** (`!relay on|off`, `!ble on|off`) only act on a
-    **DM** heard **directly (0-hop)** — i.e. from a sender physically in
-    radio range messaging the node itself — **or** any message on the
-    configured **control channel** (see `bot_control_channel` below), where
-    possession of that private channel's key is the auth and hop count does
-    not matter, so one channel message can control the whole fleet. Other
-    channel requests get a `DM-only` refusal and relayed/multi-hop DMs get
-    `direct-only`. Deliberately no further auth, and these are not listed in
-    `!help`. The bare status queries and all read-only commands work from any
-    distance.
+  - **Control commands** (`!relay on|off`, `!ble on|off`, `!wd on|off`,
+    `!advert`, `!time sync`) only
+    act on the configured **control channel** (see `bot_control_channel`
+    below): possession of that private channel's key is the auth, hop count
+    does not matter, and one channel message can control the whole fleet. On
+    the bot channel they get a `control-channel only` refusal. Deliberately
+    no further auth, and these are not listed in `!help`. The bare status
+    queries and all read-only commands work on either channel.
   - `!loc` — the node's location (`lat,lon`, tagged `(gps)` when GPS-sourced,
     or `not set`). **Control-channel only**: anywhere else the node stays
     silent as if the command doesn't exist (field nodes are often hidden;
@@ -120,9 +150,9 @@ companion app.
     `!path <lat,lon>` to the control channel every 45 s
     (`COMBINED_WD_INTERVAL_S`); every fleet node that hears it replies with
     the route it arrived by, so carrying the node around maps mesh coverage,
-    each reply pinned to the beaconed position. Toggling requires a direct
-    DM or the control channel (like `!relay`); runtime-only — a reboot
-    always returns to quiet so a forgotten survey can't drain a node.
+    each reply pinned to the beaconed position. Toggling requires the
+    control channel (like `!relay`); runtime-only — a reboot always
+    returns to quiet so a forgotten survey can't drain a node.
   - **`@<name> set <var> <value>`** (control-channel only) — node-targeted
     admin, vs. the bare `!relay`/`!ble` which every listening node obeys
     fleet-wide. Only the named node acts and replies; everyone else stays
@@ -133,10 +163,23 @@ companion app.
     - `location <lat>,<lon>` / `location off` — set/clear node location (persisted)
     - `wifi on|off` — WiFi radio on WiFi builds (**runtime-only**: a reboot
       restores WiFi so a bad toggle can't strand a node; `n/a` elsewhere)
+    - `gps on|off` — GPS power knob for deployed nodes (persisted; `n/a` on
+      builds without GPS)
+    - `advert_interval <secs>` — periodic-advert cadence, `0` = off
+      (**runtime-only**: a reboot restores the build default)
+    - `obs_url <url>` / `obs_token [label:]token` — mesh-observer config for
+      `!path` map links, provisionable over the mesh (no USB cable per node).
+      The token value may be pasted exactly as it appears in the observer's
+      labelled `DEVICE_TOKEN` secret (`garden:a1b2…`) — the label is stripped,
+      only the token is stored (max 64 chars) and it is **never echoed back**
+      (the reply confirms length only). It transits encrypted with the
+      control channel's key: anyone holding that key can already administer
+      the fleet. `-` clears. (persisted)
     - e.g. `@Solar-07 set txpower 17`, `@Xiao C6 Combined set wifi off`
-  - Replies to direct-message commands are **ACK-tracked and resent** (bounded)
-    if lost on a weak link, so `!ping`/`!path` are far more reliable
-    (`COMBINED_BOT_REPLY_RETRIES`, default 2).
+  - **`@<name> reboot`** (control-channel only) — the remote unstick for a
+    sealed node. Replies `rebooting in 5s`, then reboots after the reply has
+    had time to get on the air. Targeted-only by design: there is no bare
+    `!reboot`, so one fat-fingered message can't bounce the whole fleet.
 
 ### Bot configuration (via meshcore-cli)
 
@@ -145,8 +188,9 @@ bot locally over BLE/USB (not over the mesh):
 
 | Var | Values | Meaning |
 |-----|--------|---------|
-| `bot_enable`  | `0` / `1` | master enable for the bot (DMs + channels) |
-| `bot_channel` | channel name, index, or `off` | group channel the bot answers on (`off` = DM only) |
+| `bot_enable`  | `0` / `1` | master enable for the bot |
+| `bot_channel` | channel name, index, or `off`; `+<chan>` / `-<chan>` add/remove | group channel(s) the bot answers on — the bot is **multi-channel**: a bare value replaces the whole set, `+#bot` adds one, `-#bot` removes one (`get` lists them `+`-joined). The plain value also stays the **primary** channel (low-battery beacon target). `off` = control channel only |
+| `bot_path_channel` | same syntax as `bot_channel` | channels where **only `!path`** answers — every other command stays silent, as if the bot weren't there, and **0-hop (direct) requests are ignored too** (nothing to map). For public channels (e.g. `#bot`) where you want route mapping without exposing the whole command surface. A channel in both sets gets full commands |
 | `bot_control_channel` | channel name, index, or `off` | channel authorized for **control writes** (`!relay`/`!ble on|off`) at any hop count — use a **private** channel; anyone holding its key controls the node |
 
 ```

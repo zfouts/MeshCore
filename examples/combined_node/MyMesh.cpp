@@ -418,9 +418,6 @@ void MyMesh::onContactPathUpdated(const ContactInfo &contact) {
 }
 
 ContactInfo*  MyMesh::processAck(const uint8_t *data) {
-#ifdef WITH_COMBINED_EXTRAS
-  combinedNotifyAck(data);  // clear a pending bot reply if this ACK confirms it
-#endif
   // see if matches any in a table
   for (int i = 0; i < EXPECTED_ACK_TABLE_SIZE; i++) {
     if (memcmp(data, &expected_ack_table[i].ack, 4) == 0) { // got an ACK from recipient
@@ -547,9 +544,6 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
 void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                            const char *text) {
   markConnectionActive(from); // in case this is from a server, and we have a connection
-#ifdef WITH_BOT_COMMANDS
-  handleBotCommand(from, pkt, sender_timestamp, text); // auto-reply; still delivered to app below
-#endif
   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
 }
 
@@ -914,7 +908,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
 #endif
 #ifdef WITH_COMBINED_EXTRAS
   _prefs.bot_enabled = 1;       // bot answers by default
-  _prefs.bot_channel = 0xFF;    // channel bot off until configured (DM only)
+  _prefs.bot_channel = 0xFF;    // channel bot off until configured (control channel only)
   _prefs.ble_enabled = 1;       // BLE advertising on by default (toggle via `!ble off`)
   _prefs.bot_control_channel = 0xFF; // control channel off until configured
 #ifdef WIFI_SSID

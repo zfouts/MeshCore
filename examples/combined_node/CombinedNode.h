@@ -11,7 +11,6 @@
 #pragma once
 
 #include <stdint.h>
-#include <helpers/ContactInfo.h>
 #include "RateLimiter.h"
 
 // ---- build-time tunables (override any of these in the env build_flags) ----
@@ -38,14 +37,8 @@
 #ifndef COMBINED_BOT_RATE_SECS
 #define COMBINED_BOT_RATE_SECS 60            // ... per this many seconds
 #endif
-#ifndef COMBINED_BOT_REPLY_RETRIES
-#define COMBINED_BOT_REPLY_RETRIES 2         // extra resends of an un-ACKed bot reply (0 = fire-and-forget)
-#endif
 #ifndef COMBINED_WD_INTERVAL_S
 #define COMBINED_WD_INTERVAL_S 45            // wardrive-mode beacon interval (`!wd on`)
-#endif
-#ifndef COMBINED_BOT_REPLY_TIMEOUT_MS
-#define COMBINED_BOT_REPLY_TIMEOUT_MS 4000   // fallback resend interval when the send path gives no estimate
 #endif
 #ifndef COMBINED_MAX_NEIGHBOURS
 #define COMBINED_MAX_NEIGHBOURS 16           // size of the heard-neighbour table
@@ -82,27 +75,20 @@ struct CombinedStats {
   uint32_t boot_rtc;           // RTC time at boot
 };
 
-// One outstanding bot reply awaiting its ACK, so a reply lost on a weak link
-// gets resent instead of silently vanishing. Single slot (bot replies are
-// rate-limited and serialised); a newer reply overwrites an older pending one.
-struct CombinedPendingReply {
-  uint32_t    ack;            // expected ACK hash; 0 = nothing pending
-  uint32_t    timestamp;      // original msg timestamp, reused on resend so the ACK stays stable
-  uint32_t    next_ms;        // when to resend if still un-ACKed
-  uint8_t     attempt;        // resend attempt counter (dedup hint for the recipient)
-  uint8_t     attempts_left;  // remaining resends before giving up
-  ContactInfo to;             // recipient (sendMessage needs the full contact)
-  char        text[161];      // the reply text (bot replies are <=160 bytes)
-};
-
 struct CombinedState {
   CombinedStats     stats;
   CombinedNeighbour neighbours[COMBINED_MAX_NEIGHBOURS];
   RateLimiter       bot_limiter{COMBINED_BOT_RATE_MAX, COMBINED_BOT_RATE_SECS};
-  CombinedPendingReply pending;       // in-flight bot reply awaiting ACK (see combinedLoop retry)
   bool              wd_on;            // wardrive mode: beacon `!path <lat,lon>` to the control channel
   uint32_t          next_wd_ms;       // next wardrive beacon time
   uint32_t          next_advert_ms;   // when to send the next periodic advert
+  uint32_t          advert_interval_s; // runtime advert cadence (`set advert_interval`, 0 = off)
+  uint32_t          reboot_at_ms;     // deferred `@name reboot` deadline (0 = not armed)
+  uint32_t          next_batt_ms;     // next battery sample for the `!batt` envelope/trend
+  uint32_t          next_hour_ms;     // when to roll the 1h battery reference
+  uint16_t          mv_min, mv_max;   // battery envelope since boot (`!batt`)
+  uint16_t          mv_1h_ago;        // battery ~1h ago (boot sample until the first roll)
+  char              boot_reason[14];  // why we booted, captured once at begin (`!boot`)
   float             last_rssi;        // RSSI/SNR of the most recent raw RX (for !ping)
   float             last_snr;
   uint8_t           low_batt_strikes;

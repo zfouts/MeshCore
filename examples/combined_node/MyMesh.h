@@ -79,7 +79,7 @@
 #ifdef WITH_BOT_COMMANDS
 // combined_node extension (examples/combined_node). Inert in all other envs.
 #ifndef BOT_CMD_PREFIX
-#define BOT_CMD_PREFIX '!'   // direct messages starting with this are bot commands
+#define BOT_CMD_PREFIX '!'   // channel messages starting with this are bot commands (DMs ignored)
 #endif
 #ifndef RELAY_DEFAULT_ON
 #define RELAY_DEFAULT_ON 1   // enable relay (client_repeat) by default on first boot
@@ -240,9 +240,8 @@ private:
 #ifdef WITH_BOT_COMMANDS
   // Extension point implemented in examples/combined_node/BotCommands.cpp.
   // Inert unless WITH_BOT_COMMANDS is defined (combined_node build envs only).
-  bool handleBotCommand(const ContactInfo& from, mesh::Packet* pkt, uint32_t sender_timestamp, const char* text);
-  bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, const char* sender_name, bool is_dm, bool is_ctl, char* reply, size_t sz);
-  void sendBotReply(const ContactInfo& to, const char* text);
+  // Channel-only: bot commands in DMs are ignored (no DM handler at all).
+  bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, const char* sender_name, bool is_ctl, char* reply, size_t sz);
   uint32_t _relay_count = 0; // packets relayed since boot (for bot telemetry)
 #endif
 #ifdef WITH_RELAY_POLICY
@@ -261,12 +260,13 @@ private:
   void combinedOnRx(float snr, float rssi);
   void combinedOnNeighbour(const ContactInfo& contact, uint8_t path_len);
   void combinedCountForward(bool allowed);
-  void combinedNotifyAck(const uint8_t* ack);   // clear pending bot reply on matching ACK
   void combinedLowBattBeacon(uint16_t mv);
   void combinedFormatStats(char* reply, size_t sz);
   void combinedFormatNeighbours(char* reply, size_t sz);
+  void combinedFormatHeard(const char* arg, char* reply, size_t sz);  // `!heard <name|hex>`
   int combinedResolveChannelArg(const char* value);  // channel idx, 0xFF=off, -1=fail
   int combinedFormatChannelVar(char* buf, int n, size_t bufsz, const char* name, uint8_t ch);
+  int combinedFormatChannelMask(char* buf, int n, size_t bufsz, const char* name, uint64_t mask);
   bool combinedSetVar(const char* name, const char* value);
   char* combinedAppendVars(char* base, char* dp, const char* end);
   void handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t timestamp, const char* text);

@@ -239,8 +239,15 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     file.read((uint8_t *)&_prefs.bot_control_channel, sizeof(_prefs.bot_control_channel)); // 140 (combined_node; absent in old files -> default kept)
     file.read((uint8_t *)_prefs.wifi_ssid, sizeof(_prefs.wifi_ssid));                      // 141 (combined_node; absent in old files -> default kept)
     file.read((uint8_t *)_prefs.wifi_pwd, sizeof(_prefs.wifi_pwd));                        // 174
+    file.read((uint8_t *)&_prefs.boot_count, sizeof(_prefs.boot_count));                   // 239 (combined_node; absent in old files -> default kept)
+    file.read((uint8_t *)_prefs.obs_url, sizeof(_prefs.obs_url));                          // 243 (combined_node; absent in old files -> default kept)
+    file.read((uint8_t *)_prefs.obs_token, sizeof(_prefs.obs_token));                      // 308
+    file.read((uint8_t *)&_prefs.bot_channel_mask, sizeof(_prefs.bot_channel_mask));       // 373 (combined_node; absent in old files -> default kept)
+    file.read((uint8_t *)&_prefs.bot_path_mask, sizeof(_prefs.bot_path_mask));             // 381
     _prefs.wifi_ssid[sizeof(_prefs.wifi_ssid) - 1] = 0;   // in case of a truncated file
     _prefs.wifi_pwd[sizeof(_prefs.wifi_pwd) - 1] = 0;
+    _prefs.obs_url[sizeof(_prefs.obs_url) - 1] = 0;
+    _prefs.obs_token[sizeof(_prefs.obs_token) - 1] = 0;
 
     file.close();
   }
@@ -287,6 +294,11 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.bot_control_channel, sizeof(_prefs.bot_control_channel)); // 140 (combined_node)
     file.write((uint8_t *)_prefs.wifi_ssid, sizeof(_prefs.wifi_ssid));                      // 141 (combined_node)
     file.write((uint8_t *)_prefs.wifi_pwd, sizeof(_prefs.wifi_pwd));                        // 174
+    file.write((uint8_t *)&_prefs.boot_count, sizeof(_prefs.boot_count));                   // 239 (combined_node)
+    file.write((uint8_t *)_prefs.obs_url, sizeof(_prefs.obs_url));                          // 243 (combined_node)
+    file.write((uint8_t *)_prefs.obs_token, sizeof(_prefs.obs_token));                      // 308
+    file.write((uint8_t *)&_prefs.bot_channel_mask, sizeof(_prefs.bot_channel_mask));       // 373 (combined_node)
+    file.write((uint8_t *)&_prefs.bot_path_mask, sizeof(_prefs.bot_path_mask));             // 381
 
     file.close();
   }

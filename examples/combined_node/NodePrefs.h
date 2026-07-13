@@ -40,4 +40,12 @@ struct NodePrefs {  // persisted to file
   uint8_t bot_control_channel; // combined_node: channel index authorized for control writes (0xFF = off)
   char wifi_ssid[33];    // combined_node: WiFi STA SSID, set via `set wifi_ssid` ("" = WiFi off)
   char wifi_pwd[65];     // combined_node: WiFi passphrase, set via `set wifi_pwd` ("" = open network)
+  uint32_t boot_count;   // combined_node: boots since first flash (surfaced via `!boot`)
+  char obs_url[65];      // combined_node: mesh-observer base URL for !path map links ("" = off)
+  char obs_token[65];    // combined_node: observer device token (sent as X-Device-Token;
+                         // 64 chars fits an openssl rand -hex 24/32 secret)
+  uint64_t bot_channel_mask; // combined_node: bitmask of channel indices the bot answers on
+                             // (multi-channel; 0 = derived from legacy bot_channel at boot)
+  uint64_t bot_path_mask;    // combined_node: channels where ONLY `!path` answers (e.g. a
+                             // public #bot) -- every other command stays silent there
 };

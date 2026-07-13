@@ -19,6 +19,10 @@ extern unsigned int decode_base64(const unsigned char* input, unsigned int input
 #if defined(ESP32)
 #include "esp_task_wdt.h"
 #include "esp_idf_version.h"   // ESP_IDF_VERSION_MAJOR (WDT API changed in IDF5)
+#include "esp_system.h"        // esp_reset_reason() for `!boot`
+#elif defined(NRF52_PLATFORM)
+#include <nrf_sdm.h>           // sd_softdevice_is_enabled (boot-reason read path)
+#include <nrf_soc.h>           // sd_power_reset_reason_get/_clr
 #endif
 
 // Piecewise-linear single-cell LiPo discharge curve (resting voltage). Points
@@ -53,9 +57,57 @@ void MyMesh::combinedBegin() {
   memset(_combined->neighbours, 0, sizeof(_combined->neighbours));
   _combined->stats.boot_rtc = getRTCClock()->getCurrentTime();
   _combined->next_advert_ms = 0;
+  _combined->advert_interval_s = COMBINED_ADVERT_INTERVAL_S;
   _combined->low_batt_strikes = 0;
   _combined->wdt_on = false;
   // bot_enabled / bot_channel live in _prefs (already loaded by begin()).
+
+  // Migrate the single legacy bot_channel into the multi-channel mask (the
+  // bot answers on every channel whose bit is set). Persisted by the
+  // savePrefs() below.
+  if (_prefs.bot_channel_mask == 0 && _prefs.bot_channel != 0xFF)
+    _prefs.bot_channel_mask = 1ULL << _prefs.bot_channel;
+
+  // Why did we boot? Captured once for `!boot`. The hardware register is
+  // cumulative, so clear it after reading -- the NEXT boot then reports only
+  // its own cause.
+#if defined(ESP32)
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:   strcpy(_combined->boot_reason, "power-on");   break;
+    case ESP_RST_SW:        strcpy(_combined->boot_reason, "sw-reset");   break;
+    case ESP_RST_PANIC:     strcpy(_combined->boot_reason, "panic");      break;
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:       strcpy(_combined->boot_reason, "watchdog");   break;
+    case ESP_RST_BROWNOUT:  strcpy(_combined->boot_reason, "brownout");   break;
+    case ESP_RST_DEEPSLEEP: strcpy(_combined->boot_reason, "sleep-wake"); break;
+    case ESP_RST_EXT:       strcpy(_combined->boot_reason, "ext-reset");  break;
+    default:                strcpy(_combined->boot_reason, "other");      break;
+  }
+#elif defined(NRF52_PLATFORM)
+  // combinedBegin() runs before the BLE interface starts, so the SoftDevice is
+  // normally still off and the register is directly readable -- but check, in
+  // case the init order ever changes (direct access faults with the SD live).
+  uint32_t reas = 0;
+  uint8_t sd_en = 0;
+  sd_softdevice_is_enabled(&sd_en);
+  if (sd_en) { sd_power_reset_reason_get(&reas); sd_power_reset_reason_clr(reas); }
+  else       { reas = NRF_POWER->RESETREAS; NRF_POWER->RESETREAS = reas; }
+  // A plain power cycle (and nRF52 brownout) leaves no bits set. LPCOMP is the
+  // powerOffUntilCharged() dawn wake -- a solar node that slept and recovered.
+  if      (reas == 0)                           strcpy(_combined->boot_reason, "power-on");
+  else if (reas & POWER_RESETREAS_DOG_Msk)      strcpy(_combined->boot_reason, "watchdog");
+  else if (reas & POWER_RESETREAS_LOCKUP_Msk)   strcpy(_combined->boot_reason, "lockup");
+  else if (reas & POWER_RESETREAS_SREQ_Msk)     strcpy(_combined->boot_reason, "sw-reset");
+  else if (reas & POWER_RESETREAS_LPCOMP_Msk)   strcpy(_combined->boot_reason, "wake-charged");
+  else if (reas & POWER_RESETREAS_OFF_Msk)      strcpy(_combined->boot_reason, "gpio-wake");
+  else if (reas & POWER_RESETREAS_RESETPIN_Msk) strcpy(_combined->boot_reason, "reset-pin");
+  else                                          strcpy(_combined->boot_reason, "other");
+#else
+  strcpy(_combined->boot_reason, "unknown");
+#endif
+  _prefs.boot_count++;   // persisted: "rebooted once" vs "brownout-looping"
+  savePrefs();
 
 #if defined(ESP32)
   // Hardware watchdog: panic-reboot if loop() stalls for COMBINED_WDT_TIMEOUT_S.
@@ -120,13 +172,36 @@ void MyMesh::combinedLoop() {
   }
 #endif
 
-  // Periodic zero-hop location advert so the mesh tracks a moving node.
-#if COMBINED_ADVERT_INTERVAL_S > 0
-  if (millisHasNowPassed(_combined->next_advert_ms)) {
-    advert();
-    _combined->next_advert_ms = futureMillis(COMBINED_ADVERT_INTERVAL_S * 1000);
+  // Deferred `@name reboot` (control channel): armed with a delay so the
+  // "rebooting" reply gets on the air before the node drops.
+  if (_combined->reboot_at_ms != 0 && millisHasNowPassed(_combined->reboot_at_ms)) {
+    board.reboot();  // does not return
   }
-#endif
+
+  // Battery envelope (min/max since boot) plus a ~1h-old reference for the
+  // `!batt` trend. Sampled once a minute, not every loop -- ADC reads aren't
+  // free. The reference starts as the boot sample, so during the first hour
+  // the "1h" delta is really "since boot".
+  if (millisHasNowPassed(_combined->next_batt_ms)) {
+    _combined->next_batt_ms = futureMillis(60 * 1000UL);
+    uint16_t bmv = board.getBattMilliVolts();
+    if (bmv > 0) {
+      if (_combined->mv_min == 0 || bmv < _combined->mv_min) _combined->mv_min = bmv;
+      if (bmv > _combined->mv_max) _combined->mv_max = bmv;
+      if (_combined->mv_1h_ago == 0 || millisHasNowPassed(_combined->next_hour_ms)) {
+        _combined->mv_1h_ago = bmv;
+        _combined->next_hour_ms = futureMillis(3600 * 1000UL);
+      }
+    }
+  }
+
+  // Periodic zero-hop location advert so the mesh tracks a moving node.
+  // Cadence is runtime-adjustable (`@name set advert_interval <s>`, 0 = off);
+  // a reboot restores the build default (COMBINED_ADVERT_INTERVAL_S).
+  if (_combined->advert_interval_s > 0 && millisHasNowPassed(_combined->next_advert_ms)) {
+    advert();
+    _combined->next_advert_ms = futureMillis(_combined->advert_interval_s * 1000UL);
+  }
 
   // Wardrive beacon (`!wd on`): ask the fleet, via the control channel, to
   // report the route this node's message took -- each reply is a coverage
@@ -147,25 +222,6 @@ void MyMesh::combinedLoop() {
     }
 #endif
   }
-
-  // Resend an un-ACKed bot reply (bounded) so a single lost packet on a weak
-  // link doesn't swallow a !ping/!path answer. processAck() clears pending.ack
-  // when the recipient confirms; reusing the original timestamp keeps the ACK
-  // hash stable and lets the recipient dedupe the resends.
-#if COMBINED_BOT_REPLY_RETRIES > 0
-  CombinedPendingReply& pr = _combined->pending;
-  if (pr.ack != 0 && millisHasNowPassed(pr.next_ms)) {
-    if (pr.attempts_left > 0) {
-      pr.attempts_left--;
-      pr.attempt++;
-      uint32_t ea = 0, tmo = 0;
-      sendMessage(pr.to, pr.timestamp, pr.attempt, pr.text, ea, tmo);
-      pr.next_ms = futureMillis(tmo > 0 ? tmo : COMBINED_BOT_REPLY_TIMEOUT_MS);
-    } else {
-      pr.ack = 0;   // gave up; stop tracking
-    }
-  }
-#endif
 
 }
 
@@ -280,15 +336,45 @@ void MyMesh::combinedFormatNeighbours(char* reply, size_t sz) {
   if (count == 0) snprintf(reply, sz, "heard: none yet");
 }
 
-// Clear the pending bot reply if `ack` matches its expected ACK, so the
-// combinedLoop() retry stops. Called from processAck() (bot-reply ACKs are not
-// tracked in the app's expected_ack_table).
-void MyMesh::combinedNotifyAck(const uint8_t* ack) {
-  if (_combined && _combined->pending.ack != 0 &&
-      memcmp(ack, &_combined->pending.ack, 4) == 0) {
-    _combined->pending.ack = 0;
+// `!heard <arg>`: point query into the neighbour table -- when did THIS node
+// last directly hear one specific station? Matches a hex pubkey-prefix first
+// (2-8 hex chars, so `!path` hop hashes can be pasted as-is), then falls back
+// to a case-insensitive name substring.
+void MyMesh::combinedFormatHeard(const char* arg, char* reply, size_t sz) {
+  if (!_combined) { snprintf(reply, sz, "no data"); return; }
+
+  uint8_t hx[4];
+  int hxn = 0;
+  size_t alen = strlen(arg);
+  if (alen >= 2 && alen <= 8 && (alen & 1) == 0) {
+    while (hxn < (int)(alen / 2)) {
+      unsigned b;
+      if (sscanf(arg + hxn * 2, "%2x", &b) != 1) { hxn = 0; break; }
+      hx[hxn++] = (uint8_t)b;
+    }
   }
+
+  uint32_t now = getRTCClock()->getCurrentTime();
+  for (int i = 0; i < COMBINED_MAX_NEIGHBOURS; i++) {
+    CombinedNeighbour* e = &_combined->neighbours[i];
+    if (!e->used) continue;
+    bool hit = (hxn > 0 && memcmp(e->prefix, hx, hxn) == 0);
+    if (!hit) {
+      size_t nl = strlen(e->name);
+      for (size_t o = 0; !hit && alen <= nl && o + alen <= nl; o++)
+        hit = strncasecmp(e->name + o, arg, alen) == 0;
+    }
+    if (hit) {
+      uint32_t age = (now >= e->last_heard) ? (now - e->last_heard) : 0;
+      snprintf(reply, sz, "heard %s (%02x%02x%02x%02x) %lus ago", e->name,
+               e->prefix[0], e->prefix[1], e->prefix[2], e->prefix[3],
+               (unsigned long)age);
+      return;
+    }
+  }
+  snprintf(reply, sz, "not heard: %s", arg);
 }
+
 
 // --- meshcore-cli custom vars (CMD_GET/SET_CUSTOM_VARS) -----------------------
 
@@ -395,6 +481,17 @@ extern "C" bool combinedApplyWifi(const char* ssid, const char* pwd);
 extern "C" __attribute__((weak)) bool combinedApplyWifi(const char*, const char*) { return false; }
 extern "C" bool combinedWifiStatus(char* buf, size_t bufsz);
 extern "C" __attribute__((weak)) bool combinedWifiStatus(char*, size_t) { return false; }
+// `!path` map-link hook: POST the hop chain to the mesh-observer device API
+// and get back a short map URL to append to the reply. Strong definition in
+// main.cpp on WITH_RUNTIME_WIFI builds; this fallback quietly skips the link
+// (the raw-hex reply always goes out either way).
+extern "C" bool combinedPathShortUrl(const char* hashes, const char* origin,
+                                     const char* requester_pos, const char* reporter,
+                                     const char* requester, char* out, size_t outsz);
+extern "C" __attribute__((weak)) bool combinedPathShortUrl(const char*, const char*, const char*,
+                                                           const char*, const char*, char*, size_t) {
+  return false;
+}
 
 // `set bot_enable 0|1`, `set bot_channel <idx|off|name|#tag|name,b64psk>`,
 // `set bot_control_channel <same syntax>`. Returns true if handled.
@@ -423,13 +520,63 @@ bool MyMesh::combinedSetVar(const char* name, const char* value) {
     savePrefs();
     return true;
   }
-  bool is_bot_ch = strcmp(name, "bot_channel") == 0;
-  bool is_ctl_ch = strcmp(name, "bot_control_channel") == 0;
-  if (is_bot_ch || is_ctl_ch) {
+  bool is_url = strcmp(name, "obs_url") == 0;
+  if (is_url || strcmp(name, "obs_token") == 0) {
+    // mesh-observer device API for `!path` map links; `-` clears (see wifi vars).
+    // Oversize values are REJECTED, not truncated -- a silently clipped token
+    // would 403 on every post and be miserable to debug.
+    const char* v = (strcmp(value, "-") == 0) ? "" : value;
+    if (is_url) {
+      if (v[0] && strncmp(v, "http", 4) != 0) return false;
+      if (strlen(v) >= sizeof(_prefs.obs_url)) return false;
+      StrHelper::strzcpy(_prefs.obs_url, v, sizeof(_prefs.obs_url));
+      size_t l = strlen(_prefs.obs_url);          // store without a trailing '/':
+      while (l > 0 && _prefs.obs_url[l - 1] == '/') _prefs.obs_url[--l] = 0; // firmware appends the path
+    } else {
+      if (strlen(v) >= sizeof(_prefs.obs_token)) return false;
+      StrHelper::strzcpy(_prefs.obs_token, v, sizeof(_prefs.obs_token));
+    }
+    savePrefs();
+    return true;
+  }
+  bool is_bot_ch  = strcmp(name, "bot_channel") == 0;
+  bool is_path_ch = strcmp(name, "bot_path_channel") == 0;
+  bool is_ctl_ch  = strcmp(name, "bot_control_channel") == 0;
+  if (is_bot_ch || is_path_ch || is_ctl_ch) {
+    uint64_t* mask = is_bot_ch ? &_prefs.bot_channel_mask
+                   : is_path_ch ? &_prefs.bot_path_mask : NULL;
+    if (mask && (value[0] == '+' || (value[0] == '-' && value[1]))) {
+      // `set bot_channel +#bot` / `-#bot` (same for bot_path_channel):
+      // add/remove ONE channel from the set. A bare value replaces the whole
+      // set. The legacy bot_channel index stays meaningful as the PRIMARY
+      // channel -- it is where the low-battery "going dark" beacon goes.
+      bool add = value[0] == '+';
+      int idx = combinedResolveChannelArg(value + 1);
+      if (idx < 0 || idx == 0xFF || idx >= 64) return false;
+      if (add) {
+        *mask |= (1ULL << idx);
+        if (is_bot_ch && _prefs.bot_channel == 0xFF) _prefs.bot_channel = (uint8_t)idx;
+      } else {
+        *mask &= ~(1ULL << idx);
+        if (is_bot_ch && _prefs.bot_channel == idx) { // removed the primary:
+          _prefs.bot_channel = 0xFF;                  // promote the lowest remaining
+          for (int i = 0; i < 64; i++)
+            if ((_prefs.bot_channel_mask >> i) & 1) { _prefs.bot_channel = (uint8_t)i; break; }
+        }
+      }
+      savePrefs();
+      return true;
+    }
     int idx = combinedResolveChannelArg(value);
     if (idx < 0) return false;
-    if (is_bot_ch) _prefs.bot_channel = (uint8_t)idx;
-    else           _prefs.bot_control_channel = (uint8_t)idx;
+    if (is_bot_ch) {
+      _prefs.bot_channel = (uint8_t)idx;
+      _prefs.bot_channel_mask = (idx == 0xFF) ? 0 : (1ULL << idx);
+    } else if (is_path_ch) {
+      _prefs.bot_path_mask = (idx == 0xFF) ? 0 : (1ULL << idx);
+    } else {
+      _prefs.bot_control_channel = (uint8_t)idx;
+    }
     savePrefs();
     return true;
   }
@@ -454,13 +601,35 @@ int MyMesh::combinedFormatChannelVar(char* buf, int n, size_t bufsz, const char*
   return n + snprintf(buf + n, bufsz - n, "%s:%d", name, ch);
 }
 
+// Append "name:<ch>+<ch>+..." for every channel in `mask` ('+'-joined -- ','
+// and ':' both belong to the reply framing), or "name:off" for an empty mask.
+int MyMesh::combinedFormatChannelMask(char* buf, int n, size_t bufsz, const char* name, uint64_t mask) {
+  if (n < 0 || n >= (int)bufsz - 1) return n;
+  n += snprintf(buf + n, bufsz - n, "%s:", name);
+  if (mask == 0) return n + snprintf(buf + n, bufsz - n, "off");
+  bool first = true;
+  for (int i = 0; i < 64 && n < (int)bufsz - 1; i++) {
+    if (!((mask >> i) & 1)) continue;
+    if (!first) n += snprintf(buf + n, bufsz - n, "+");
+    first = false;
+#ifdef MAX_GROUP_CHANNELS
+    ChannelDetails d;
+    if (getChannel(i, d) && d.name[0]) { n += snprintf(buf + n, bufsz - n, "%s", d.name); continue; }
+#endif
+    n += snprintf(buf + n, bufsz - n, "%d", i);
+  }
+  return n;
+}
+
 char* MyMesh::combinedAppendVars(char* base, char* dp, const char* end) {
   if (!_combined) return dp;
-  char buf[224];
+  char buf[320];
   int n = 0;
   if (dp > base) buf[n++] = ',';
   n += snprintf(buf + n, sizeof(buf) - n, "bot_enable:%d,", _prefs.bot_enabled ? 1 : 0);
-  n = combinedFormatChannelVar(buf, n, sizeof(buf), "bot_channel", _prefs.bot_channel);
+  n = combinedFormatChannelMask(buf, n, sizeof(buf), "bot_channel", _prefs.bot_channel_mask);
+  if (n < (int)sizeof(buf) - 1) n += snprintf(buf + n, sizeof(buf) - n, ",");
+  n = combinedFormatChannelMask(buf, n, sizeof(buf), "bot_path_channel", _prefs.bot_path_mask);
   if (n < (int)sizeof(buf) - 1) n += snprintf(buf + n, sizeof(buf) - n, ",");
   n = combinedFormatChannelVar(buf, n, sizeof(buf), "bot_control_channel", _prefs.bot_control_channel);
   char wifi_state[40];
@@ -468,6 +637,14 @@ char* MyMesh::combinedAppendVars(char* base, char* dp, const char* end) {
     // ssid + connection state only -- the password is never echoed back
     n += snprintf(buf + n, sizeof(buf) - n, ",wifi_ssid:%s,wifi:%s",
                   _prefs.wifi_ssid[0] ? _prefs.wifi_ssid : "off", wifi_state);
+    // observer URL only -- the device token is never echoed back. A ':'
+    // inside the value would break the reply's name:value,... framing (the
+    // stored value is fine -- set splits on the first ':' only), so echo
+    // with ';' in place of ':' ("https;//obs.example.com" loses nothing).
+    char obs_echo[sizeof(_prefs.obs_url)];
+    StrHelper::strzcpy(obs_echo, _prefs.obs_url[0] ? _prefs.obs_url : "off", sizeof(obs_echo));
+    for (char* c = obs_echo; *c; c++) if (*c == ':') *c = ';';
+    n += snprintf(buf + n, sizeof(buf) - n, ",obs_url:%s", obs_echo);
   }
   if (n >= (int)sizeof(buf)) n = sizeof(buf) - 1;   // snprintf clamp (defensive)
   if (n > 0 && n <= (int)(end - dp)) {              // only append if it fully fits
