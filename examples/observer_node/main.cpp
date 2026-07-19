@@ -322,20 +322,27 @@ void halt() {
   #define MQTT_SEND_MAX_PER_MIN 6
   #endif
   #define MQTT_SEND_QUEUE_DEPTH 4
-  // Fleet-wide send bridge: every observer ALSO subscribes to
-  // <MQTT_SHARED_SEND_PREFIX>/send/+, so one publish reaches all of them.
-  // Meant for observers on DISJOINT meshes (one bridge per mesh): two
-  // subscribers on the SAME mesh each transmit their own copy -- packet dedup
-  // can't collapse them (different timestamps) and the channel sees doubles.
-  // Same-mesh sends should use the per-node <prefix>/send/ topic instead.
-  // Override with -D, or set to "" to disable the shared subscription.
-  #ifndef MQTT_SHARED_SEND_PREFIX
-  #define MQTT_SHARED_SEND_PREFIX "meshcore/all"
+  // Per-user fleet send bridge: an observer ALSO subscribes to
+  // meshcore/<user>/all/send/+, so one publish reaches all of THAT user's
+  // nodes (still inside the user's ACL namespace). Meant for a user's
+  // observers on DISJOINT meshes (one bridge per mesh): two subscribers on the
+  // SAME mesh each transmit their own copy -- packet dedup can't collapse them
+  // (different timestamps) and the channel sees doubles. Same-mesh sends
+  // should use the per-node send topic instead. -D MQTT_SHARED_SEND_ENABLE=0
+  // disables the shared subscription.
+  #ifndef MQTT_SHARED_SEND_ENABLE
+  #define MQTT_SHARED_SEND_ENABLE 1
   #endif
 
   static esp_mqtt_client_handle_t mqtt_client = NULL;
   static bool mqtt_connected = false;
-  static char mqtt_prefix[48];       // topic prefix: prefs.mqtt_topic or "meshcore/<name>"
+  // Topics are namespaced per user for multi-user safety: meshcore/<user>/<node>
+  // (user = the MQTT login, so it lines up with a mosquitto `meshcore/%u/#`
+  // ACL). mqtt_prefix is that per-node prefix; mqtt_shared_prefix is the
+  // per-user fleet prefix meshcore/<user>/all. Buffers sized for the worst
+  // case: "meshcore/" + user[32] + "/" + node[31].
+  static char mqtt_prefix[80];
+  static char mqtt_shared_prefix[48];   // meshcore/<user>/all ("" = disabled)
   static unsigned long next_mqtt_pub = 0;
   // Last connect failure, surfaced via `get mqtt` -- a TLS/refused/DNS error
   // otherwise looks like "connecting" forever. Written from the esp_mqtt task,
@@ -344,6 +351,18 @@ void halt() {
   static int mqtt_err_tls = 0;       // esp_tls_last_esp_err
   static int mqtt_err_sock = 0;      // transport sock errno
   static int mqtt_err_rc = 0;        // broker CONNACK return code
+  // Reconnect watchdog: esp_mqtt auto-retries a dropped connection, but a
+  // dropped TLS session often can't re-handshake (heap fragmentation ->
+  // mbedtls setup/handshake fails, tls0x8017/0x801a) and wedges until a clean
+  // boot. If MQTT stays down while WiFi is up, escalate: a full client re-init
+  // first, then reboot. Arms only after a first successful connect, so a
+  // misconfigured/unreachable broker can't reboot-loop from cold.
+  static bool mqtt_ever_connected = false;
+  static unsigned long mqtt_down_since_ms = 0;
+  static bool mqtt_soft_tried = false;
+  #ifndef OBS_MQTT_REBOOT_S
+  #define OBS_MQTT_REBOOT_S 300   // reboot after this long down (WiFi up); soft re-init at half
+  #endif
 
   // Send bridge: the esp_mqtt task parses <prefix>/send/<channel> messages
   // into this queue; mqttLoop() (main task) drains and transmits. Cross-task
@@ -364,34 +383,53 @@ void halt() {
     return topic + plen + 6;
   }
 
+  // Topic hygiene on a free-form name segment: no wildcards / level separators.
+  static void mqttSanitizeSeg(char* s) {
+    for (; *s; s++) if (*s == '#' || *s == '+' || *s == '/' || *s == ' ') *s = '-';
+  }
+
   static void mqttBuildPrefix() {
     auto p = the_mesh.getNodePrefs();
+    char user[sizeof(p->mqtt_user)]; StrHelper::strzcpy(user, p->mqtt_user, sizeof(user));
+    mqttSanitizeSeg(user);
     if (p->mqtt_topic[0]) {
+      // explicit override wins, used verbatim
       snprintf(mqtt_prefix, sizeof(mqtt_prefix), "%s", p->mqtt_topic);
+    } else if (user[0]) {
+      // per-user namespace: meshcore/<user>/<node> (ACL-aligned)
+      snprintf(mqtt_prefix, sizeof(mqtt_prefix), "meshcore/%s/%s", user, p->node_name);
+      mqttSanitizeSeg(mqtt_prefix + 9 + strlen(user) + 1);   // hygiene on the <node> part only
     } else {
+      // anonymous (no login): fall back to meshcore/<node>
       snprintf(mqtt_prefix, sizeof(mqtt_prefix), "meshcore/%s", p->node_name);
-      // topic hygiene: no wildcards/level separators from a free-form name
-      for (char* c = mqtt_prefix + 9; *c; c++)
-        if (*c == '#' || *c == '+' || *c == '/' || *c == ' ') *c = '-';
+      mqttSanitizeSeg(mqtt_prefix + 9);
     }
     size_t l = strlen(mqtt_prefix);
     while (l > 0 && mqtt_prefix[l - 1] == '/') mqtt_prefix[--l] = 0;
+
+    // Per-user fleet prefix: meshcore/<user>/all (only when a user is set).
+    if (MQTT_SHARED_SEND_ENABLE && user[0])
+      snprintf(mqtt_shared_prefix, sizeof(mqtt_shared_prefix), "meshcore/%s/all", user);
+    else
+      mqtt_shared_prefix[0] = 0;
   }
 
   static void mqttOnEvent(void* arg, esp_event_base_t base, int32_t event_id, void* event_data) {
     if (event_id == MQTT_EVENT_CONNECTED) {
       mqtt_connected = true;
-      char t[64];
+      char t[96];
       snprintf(t, sizeof(t), "%s/status", mqtt_prefix);
       esp_mqtt_client_publish(mqtt_client, t, "online", 0, 1, true);  // pairs with the LWT below
       snprintf(t, sizeof(t), "%s/send/+", mqtt_prefix);
       esp_mqtt_client_subscribe(mqtt_client, t, 0);                   // MQTT->mesh send bridge
-      if (MQTT_SHARED_SEND_PREFIX[0] && strcmp(MQTT_SHARED_SEND_PREFIX, mqtt_prefix) != 0) {
-        snprintf(t, sizeof(t), "%s/send/+", MQTT_SHARED_SEND_PREFIX); // fleet-wide send bridge
+      if (mqtt_shared_prefix[0] && strcmp(mqtt_shared_prefix, mqtt_prefix) != 0) {
+        snprintf(t, sizeof(t), "%s/send/+", mqtt_shared_prefix);      // per-user fleet send bridge
         esp_mqtt_client_subscribe(mqtt_client, t, 0);
       }
       next_mqtt_pub = 0;   // first telemetry right away
       mqtt_err_type = mqtt_err_tls = mqtt_err_sock = mqtt_err_rc = 0;
+      mqtt_ever_connected = true;
+      mqtt_down_since_ms = 0;   // healthy -> disarm the watchdog
     } else if (event_id == MQTT_EVENT_DISCONNECTED) {
       mqtt_connected = false;   // esp_mqtt's task retries on its own
     } else if (event_id == MQTT_EVENT_ERROR) {
@@ -409,7 +447,8 @@ void halt() {
       if (ev->topic == NULL || ev->data_len <= 0 || mqtt_send_q == NULL) return;
       int clen = 0;
       const char* chan = sendTopicSuffix(ev->topic, ev->topic_len, mqtt_prefix, &clen);
-      if (!chan) chan = sendTopicSuffix(ev->topic, ev->topic_len, MQTT_SHARED_SEND_PREFIX, &clen);
+      if (!chan && mqtt_shared_prefix[0])
+        chan = sendTopicSuffix(ev->topic, ev->topic_len, mqtt_shared_prefix, &clen);
       if (!chan || clen <= 0 || clen >= (int)sizeof(MqttSendMsg::channel)) return;
       MqttSendMsg m;
       memcpy(m.channel, chan, clen);
@@ -437,7 +476,7 @@ void halt() {
     if (mqtt_send_q == NULL)             // created once, survives client rebuilds
       mqtt_send_q = xQueueCreate(MQTT_SEND_QUEUE_DEPTH, sizeof(MqttSendMsg));
     // esp_mqtt copies the config strings at init, but keep them static anyway.
-    static char uri[96], lwt[64];
+    static char uri[96], lwt[104];
     const char* host = p->mqtt_host;
     bool tls = false;
     if (strncmp(host, "mqtts://", 8) == 0)     { tls = true; host += 8; }
@@ -526,7 +565,7 @@ void halt() {
     char esc_text[360], esc_who[48];
     mqttJsonEscape(text, esc_text, sizeof(esc_text));
     mqttJsonEscape(channel ? channel : (from ? from : "?"), esc_who, sizeof(esc_who));
-    char topic[72], payload[520];
+    char topic[104], payload[520];
     snprintf(topic, sizeof(topic), "%s/msg/%s", mqtt_prefix, kind);
     int n = snprintf(payload, sizeof(payload), "{\"%s\":\"%s\",\"text\":\"%s\",\"snr\":%.1f,\"hops_n\":%d",
                      channel ? "channel" : "from", esc_who, esc_text, (double)snr, hops_n);
@@ -556,7 +595,7 @@ void halt() {
       if (c.name[0] == 0 && c.last_advert_timestamp == 0) continue;  // empty slot
       char pk[9];
       for (int b = 0; b < 4; b++) snprintf(pk + b * 2, 3, "%02x", c.id.pub_key[b]);
-      char topic[80], payload[224], esc_name[64];
+      char topic[104], payload[224], esc_name[64];
       snprintf(topic, sizeof(topic), "%s/contact/%s", mqtt_prefix, pk);
       mqttJsonEscape(c.name, esc_name, sizeof(esc_name));
       const char* ts = (c.type <= ADV_TYPE_SENSOR) ? TYPE_STR[c.type] : "unknown";
@@ -595,7 +634,7 @@ void halt() {
       char hops[MAX_PATH_SIZE * 2 + 1]; hops[0] = 0;
       if (blen > 0 && blen <= MAX_PATH_SIZE)
         for (int b = 0; b < blen; b++) snprintf(hops + b * 2, 3, "%02x", h.path[b]);
-      char topic[80], payload[256], esc_name[64];
+      char topic[104], payload[256], esc_name[64];
       snprintf(topic, sizeof(topic), "%s/heard/%s", mqtt_prefix, pk);
       mqttJsonEscape(h.name, esc_name, sizeof(esc_name));
       int nn = snprintf(payload, sizeof(payload),
@@ -609,7 +648,25 @@ void halt() {
   }
 
   static void mqttLoop() {
-    if (!mqtt_client || !mqtt_connected) return;
+    if (!mqtt_client) return;
+    if (!mqtt_connected) {
+      // Reconnect watchdog (see mqtt_down_since_ms notes). Only counts down
+      // while WiFi is up and we've connected before; a WiFi outage resets it so
+      // WiFi's own reconnect isn't mistaken for an MQTT wedge.
+      if (mqtt_ever_connected && WiFi.status() == WL_CONNECTED) {
+        if (mqtt_down_since_ms == 0) { mqtt_down_since_ms = millis(); mqtt_soft_tried = false; }
+        unsigned long down = millis() - mqtt_down_since_ms;
+        if (down > OBS_MQTT_REBOOT_S * 1000UL) {
+          ESP.restart();   // clean boot reliably reconnects (defragments the heap)
+        } else if (!mqtt_soft_tried && down > (OBS_MQTT_REBOOT_S * 1000UL) / 2) {
+          mqtt_soft_tried = true;
+          observerApplyMqtt();   // fresh esp_mqtt/TLS context -- clears a half-open/stuck socket
+        }
+      } else {
+        mqtt_down_since_ms = 0;
+      }
+      return;
+    }
     // Drain the send bridge (main-task context, so mesh calls are safe here).
     // Peek-then-receive: an over-budget message STAYS queued for a later pass
     // instead of being dequeued and lost.
@@ -621,7 +678,7 @@ void halt() {
     }
     if (next_mqtt_pub == 0 || (long)(millis() - next_mqtt_pub) >= 0) {
       next_mqtt_pub = millis() + OBS_MQTT_INTERVAL_S * 1000UL;
-      char t[64], payload[288];
+      char t[104], payload[288];
       snprintf(t, sizeof(t), "%s/telemetry", mqtt_prefix);
       int n = the_mesh.observerFormatMqttTelemetry(payload, sizeof(payload));
       if (n > 0 && n < (int)sizeof(payload))
@@ -653,7 +710,7 @@ void halt() {
   // RX-context safe) so the broker always holds each repeater's latest state.
   extern "C" void observerProbePublish(const char* pk_hex, uint16_t batt_mv, int16_t temp_dc, uint32_t ok_epoch) {
     if (!mqtt_client || !mqtt_connected) return;
-    char t[80], payload[160];
+    char t[112], payload[160];
     snprintf(t, sizeof(t), "%s/repeater/%s/telemetry", mqtt_prefix, pk_hex);
     int n = snprintf(payload, sizeof(payload), "{\"batt_mv\":%u,\"ts\":%lu",
                      (unsigned)batt_mv, (unsigned long)ok_epoch);
@@ -665,7 +722,7 @@ void halt() {
   }
   extern "C" void observerProbePublishPath(const char* pk_hex, const char* hops_hex) {
     if (!mqtt_client || !mqtt_connected) return;
-    char t[80], payload[160];
+    char t[112], payload[160];
     snprintf(t, sizeof(t), "%s/repeater/%s/path", mqtt_prefix, pk_hex);
     int n = snprintf(payload, sizeof(payload), "{\"hops\":\"%s\"}", hops_hex);
     if (n > 0 && n < (int)sizeof(payload))

@@ -1,6 +1,23 @@
 # observer_node changelog
 
 ## Unreleased
+- Per-user topic namespace (multi-user safety): default prefix is now
+  `meshcore/<mqtt_user>/<node_name>` (was `meshcore/<node_name>`), so the
+  username segment lines up with a broker `meshcore/%u/#` ACL and each user is
+  isolated to their own subtree. Anonymous (no `mqtt_user`) falls back to
+  `meshcore/<node_name>`. Fleet send topic is likewise per-user:
+  `meshcore/<user>/all/send/+` (`MQTT_SHARED_SEND_PREFIX` -D replaced by
+  `MQTT_SHARED_SEND_ENABLE`). Topic buffers enlarged for the longer prefix.
+  NOTE: existing nodes move topics on upgrade — clear old-scheme retained
+  topics on the broker after reflashing.
+- MQTT reconnect watchdog: esp_mqtt auto-retries, but a dropped TLS session
+  frequently can't re-handshake (heap fragmentation -> mbedtls setup/handshake
+  fails, `tls0x8017`/`0x801a`) and wedges until a reboot. New: if MQTT stays
+  down while WiFi is up, escalate -- full client re-init at OBS_MQTT_REBOOT_S/2,
+  `ESP.restart()` at OBS_MQTT_REBOOT_S (default 300s). Arms only after a first
+  successful connect so an unreachable broker can't cold-reboot-loop; a WiFi
+  outage resets the timer. Keeps the MQTT->mesh send bridge from silently
+  going deaf after a connection drop.
 - MQTT TLS insecure opt-out: `set mqtt_tls_insecure on|off` (NodePrefs, default
   0). When on, attaches no CA so esp-tls skips server-cert verification — for
   private-CA / IP-addressed brokers. Encryption without authentication; per

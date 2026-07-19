@@ -104,10 +104,14 @@ Changing any of them tears down and rebuilds the client.
 
 ### 3.1 `<prefix>`
 
-`mqtt_topic` if set, else `meshcore/<node_name>` with topic hygiene applied to
-the name portion: the characters `#`, `+`, `/`, and space are replaced with
-`-`; trailing `/` stripped. Maximum 47 bytes. All examples below assume
-`meshcore/Heltec-Observer`.
+`mqtt_topic` if set (used verbatim), else **`meshcore/<username>/<node_name>`**
+— a per-user namespace for multi-user safety. `<username>` is the MQTT login
+(`mqtt_user`), so it lines up with a broker ACL of `topic readwrite
+meshcore/%u/#`: each user can only touch their own subtree. If no username is
+set (anonymous), it falls back to `meshcore/<node_name>`. Topic hygiene is
+applied to the free-form `<node_name>` segment (the characters `#`, `+`, `/`,
+and space become `-`); trailing `/` stripped. All examples below assume login
+`mesh` and node `LHTX-Observer`, i.e. `meshcore/mesh/LHTX-Observer`.
 
 ### 3.2 `<pk8>`
 
@@ -298,13 +302,14 @@ Secure the broker accordingly (auth + ACLs on `+/send/#` at minimum).
 
 ### 6.3 Fleet send topic
 
-Every observer also subscribes to `MQTT_SHARED_SEND_PREFIX/send/+` (default
-`meshcore/all`), so one publish reaches the whole fleet. This is for
-observers on **disjoint meshes** (one bridge per mesh). Two subscribers on
-the *same* mesh each transmit their own copy — packet dedup cannot collapse
-them (different timestamps) and the channel sees doubles. Same-mesh sends
-must use the per-node `<prefix>/send/` topic. Disable with
-`-D MQTT_SHARED_SEND_PREFIX='""'`.
+Every observer also subscribes to `meshcore/<username>/all/send/+` — a
+**per-user** fleet topic, so one publish reaches all of *that user's* nodes
+while staying inside their ACL namespace. This is for a user's observers on
+**disjoint meshes** (one bridge per mesh). Two subscribers on the *same* mesh
+each transmit their own copy — packet dedup cannot collapse them (different
+timestamps) and the channel sees doubles. Same-mesh sends must use the
+per-node `<prefix>/send/` topic. Disable with `-D MQTT_SHARED_SEND_ENABLE=0`.
+Only active when a username is set.
 
 ### 6.4 Why failures are silent
 
