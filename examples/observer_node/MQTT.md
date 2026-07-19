@@ -329,7 +329,55 @@ the mesh's own context.
 
 ---
 
-## 7. Timing summary
+## 7. Consuming from a frontend / dashboard
+
+Notes for a read-only web or app client (as opposed to a firmware adopter).
+
+### 7.1 Connecting from a browser
+
+The broker listener the firmware uses is plain TCP MQTT — a browser **cannot**
+open that. Point a web client (e.g. `mqtt.js`) at an **MQTT-over-WebSocket**
+listener on the same broker (mosquitto `listener <port>` + `protocol
+websockets`, or `wss://` behind a proxy). Native apps can use the TCP listener
+directly. Log in with the user's credentials; with `meshcore/%u/#` ACLs the
+client only sees its own subtree, so subscribe to `meshcore/<username>/#`.
+
+### 7.2 Build state from retained topics
+
+`status`, `contact/<pk8>`, and `heard/<pk8>` are **retained**, so on connect
+the broker immediately replays the current value of each — you get the full
+node roster, per-node liveness, and topology without waiting for the next
+publish. Build your node/contact list from these. `telemetry`, `sensors`, and
+`msg/*` are **live streams** (not retained): you only see them going forward.
+
+### 7.3 Parsing gotchas
+
+- **`status` is a bare string** (`online`/`offline`), not JSON — special-case
+  it; don't `JSON.parse` it.
+- Everything else is a single JSON object. **Optional keys are omitted, not
+  null** — test for presence (`"lat" in c`), don't assume.
+- Timestamps (`ts`, `heard`) are unix epoch **seconds**. `snr` is dB. `hops` is
+  a hex string of 1-byte hop hashes; `hops_n` is the count (`0` = heard direct).
+- Tolerate unknown keys — the schema only grows, never repurposes a key.
+
+### 7.4 Keying the UI
+
+Topics are `meshcore/<username>/<node_name>/<leaf>`. Key your dashboard by the
+`<node_name>` path segment (one user may run several nodes), and within a node
+by `<pk8>` for per-contact rows. `contact.type` ∈
+`none | chat | repeater | room | sensor | unknown`; `contact.heard` is the
+staleness signal (a contact evicted from a full table stops updating but its
+last retained value lingers — trust `heard`, not topic presence).
+
+### 7.5 Sending (optional)
+
+To let the UI transmit into a mesh channel, publish plain text to
+`meshcore/<username>/<node_name>/send/<channel>` (channel name or slot index;
+see §6). Read-only dashboards can ignore this and the per-user fleet topic.
+
+---
+
+## 8. Timing summary
 
 | Publisher | Default cadence | Override (`-D`) |
 |---|---|---|
@@ -342,7 +390,7 @@ the mesh's own context.
 
 ---
 
-## 8. Adoption checklist
+## 9. Adoption checklist
 
 For a firmware or gateway claiming compatibility with this contract:
 
