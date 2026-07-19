@@ -1,0 +1,72 @@
+# observer_node changelog
+
+## Unreleased
+- MQTT TLS: `set mqtt_host mqtts://host[:port]` (default 8883; explicit port
+  wins). Broker cert verified against the Let's Encrypt production roots
+  (X1/X2/YR/YE) pinned in `MqttCaCerts.h` — no per-device certs, no
+  insecure-skip, non-LE CAs rejected. Plain `mqtt://` unchanged.
+- SNTP on WiFi connect (`pool.ntp.org`): a power-on reset seeds the RTC to a
+  2024 constant, which fails TLS cert validation until a companion syncs the
+  clock — unattended TLS nodes now get real time on their own.
+- `get mqtt` now surfaces the last connect failure (error type, esp-tls err,
+  sock errno, CONNACK code) instead of a permanent bare "connecting" —
+  distinguishes DNS vs TCP-timeout vs TLS vs auth at a glance.
+- Contact roster walk skips empty contact-table slots (was publishing a bogus
+  retained `contact/00000000`).
+- Fully decoupled naming from combined_node: `CombinedNode.*` →
+  `ObserverNode.*`, `CombinedRepeatFreq.h` → `ObserverRepeatFreq.h`,
+  `Combined*` types → `Observer*`, `combinedXxx()` fns → `observerXxx()`,
+  `COMBINED_*` build flags → `OBS_*` (e.g. `OBS_MQTT_INTERVAL_S`,
+  `OBS_ADVERT_INTERVAL_S`), `WITH_COMBINED_EXTRAS` → `WITH_OBSERVER_EXTRAS`.
+  Both shipped envs updated; override any old `-D COMBINED_*` flags with the
+  new names. The observer tree now stands alone.
+- Removed Home Assistant MQTT discovery (retained `homeassistant/sensor/*/config`
+  publishes + the `mc-<mac>` uid). The observer publishes plain topics only;
+  HA users can map `<prefix>/telemetry` manually if wanted.
+- Added `MQTT.md`: standalone spec of the MQTT interface (topics, payload
+  schemas, QoS/retain rules, timing, send-bridge contract, adoption checklist).
+- MQTT → mesh send bridge: node now SUBSCRIBES to `<prefix>/send/+`; a payload
+  published to `<prefix>/send/<channel_idx>` is transmitted as channel text
+  (via `sendGroupMessage`, as this node's name) into that channel slot. Scope
+  is deliberately narrow — channels the node holds keys for, text only, no
+  DM/CLI path. esp_mqtt-task → main-loop handoff via FreeRTOS queue (depth 4);
+  rate-limited `MQTT_SEND_MAX_PER_MIN`=6 (over-budget msgs stay queued;
+  queue overflow drops). First deliberate exception to publish-only MQTT.
+- Send bridge addressing: `<prefix>/send/<channel>` accepts a slot index OR a
+  channel name (case-insensitive; leading `#` on the stored name ignored, as
+  MQTT publish topics can't contain `#`). Name resolution happens at drain
+  time on the main task (channel state is mesh state), so the queue carries
+  the raw topic suffix. Unknown name/slot -> nothing sent.
+- Fleet-wide send topic: also subscribes `MQTT_SHARED_SEND_PREFIX/send/+`
+  (default `meshcore/all`; `-D` override, `""` disables) so one publish
+  reaches every observer. Documented for DISJOINT meshes only — same-mesh
+  fleets would double-transmit (dedup can't collapse distinct timestamps).
+- Probe DISABLED in both shipped envs (`WITH_OBSERVER_PROBE` removed from
+  `heltec_v4_observer_node_wifi` / `Xiao_S3_WIO_observer_node_wifi`): the
+  twice-daily flood login + `GET_TELEMETRY_DATA` per repeater spent shared
+  airtime on battery/temp data we no longer want. Observer is now passive —
+  no flood logins, no telemetry requests; `/repeater/<pk>/telemetry` and
+  `/repeater/<pk>/path` are no longer published. Code stays in-tree; re-add
+  the define to restore it.
+- `<prefix>/heard/<pk>` now carries `"snr"` — the advert's SNR as received by
+  this node (per-packet, from `Packet::getSNR()`; stashed by an `onAdvertRecv`
+  override since `onDiscoveredContact` isn't handed the packet). For `hops_n`=0
+  this measures the link to the origin node; for multi-hop, the last relay's
+  transmission. RSSI is deliberately omitted: packets are processed from a
+  delayed inbound queue, so the radio's last-RSSI may belong to another packet.
+- Initial observer_node variant: companion stack + `_wifi` MQTT publisher
+  with bot/relay removed and an active telemetry prober added. Self-contained
+  tree — shares no example sources with anything else.
+- Active prober (`ObserverProbe.h` schedule/policy + `ObserverProbeGlue.cpp`
+  mesh glue): walks known `ADV_TYPE_REPEATER` contacts and, twice a day per
+  repeater (`OBS_PROBE_PERIOD_S`=12 h), does a blank-password `sendLogin(c,"")`
+  then `sendRequest(REQ_TYPE_GET_TELEMETRY_DATA)`. Parses the CayenneLPP reply
+  (battery voltage + MCU temperature). Single probe in flight; `OBS_PROBE_MIN_GAP_S`
+  =45 s throttle; `OBS_PROBE_FAIL_BACKOFF_S`=24 h back-off on a rejected/silent
+  node (blank password only — never guesses, never requests admin). Gated on a
+  valid RTC epoch so the twice-daily schedule is meaningful.
+- Publishes retained `<prefix>/repeater/<pk>/telemetry` (`batt_mv`,`temp_c`,`ts`)
+  on receipt and `<prefix>/repeater/<pk>/path` (`hops` hex) from the hop chain
+  the flooded login teaches (`onContactPathUpdated`) — one sweep refreshes both
+  health and topology.
+- Does not relay (auto-relay was gated on `WITH_BOT_COMMANDS`, absent here).
