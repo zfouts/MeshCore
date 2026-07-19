@@ -55,8 +55,17 @@ make the contract safe and predictable, independent of firmware internals:
 
 TLS example: `set mqtt_host mqtts://broker.example.org:31883`. The CA pin is
 deliberate — the device trusts LE-issued broker certs and nothing else; if
-the broker moves to another CA, refresh `MqttCaCerts.h` and reflash. There is
-intentionally no verification-off escape hatch.
+the broker moves to another CA, refresh `MqttCaCerts.h` and reflash.
+
+**Insecure opt-out:** `set mqtt_tls_insecure on` disables server-cert
+verification entirely (encryption without authentication) — for brokers
+behind a private CA or reached by an IP/hostname the pinned roots can't
+vouch for. Off by default; per-node; echoed in the var dump only when on.
+It trades away MITM protection, so use it only where the transport is
+already trusted. Toggling it live rebuilds the MQTT client; if the TLS
+buffers can't be reallocated in a fragmented heap the reconnect fails
+(status shows `tls0x8017` = mbedtls ssl-setup) — reboot and it comes up
+clean on the next boot.
 
 **Last Will and Testament (LWT):** topic `<prefix>/status`, payload
 `offline`, **retained**. On every successful connect the node publishes

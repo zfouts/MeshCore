@@ -517,6 +517,12 @@ bool MyMesh::observerSetVar(const char* name, const char* value) {
     savePrefs();
     return true;
   }
+  if (strcmp(name, "mqtt_tls_insecure") == 0) {
+    _prefs.mqtt_tls_insecure = (value[0] == '1' || value[0] == 'o' /*on*/) ? 1 : 0;
+    savePrefs();
+    observerApplyMqtt();   // rebuild the client with the new verification mode
+    return true;
+  }
   bool is_ssid = strcmp(name, "wifi_ssid") == 0;
   if (is_ssid || strcmp(name, "wifi_pwd") == 0) {
     // `-` clears (meshcli can't send an empty value); an SSID/password of a
@@ -772,6 +778,10 @@ char* MyMesh::observerAppendVars(char* base, char* dp, const char* end) {
     dp = appendVarKV(dp, end, &first, kv);
     snprintf(kv, sizeof(kv), "mqtt:%s", mq);
     dp = appendVarKV(dp, end, &first, kv);
+    if (_prefs.mqtt_tls_insecure) {   // only surfaced when on -- it's the unsafe state
+      snprintf(kv, sizeof(kv), "mqtt_tls_insecure:1");
+      dp = appendVarKV(dp, end, &first, kv);
+    }
     char obs_echo[sizeof(_prefs.obs_url)];
     StrHelper::strzcpy(obs_echo, _prefs.obs_url[0] ? _prefs.obs_url : "off", sizeof(obs_echo));
     for (char* c = obs_echo; *c; c++) if (*c == ':') *c = ';';

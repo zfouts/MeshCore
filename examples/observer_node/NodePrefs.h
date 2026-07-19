@@ -52,4 +52,6 @@ struct NodePrefs {  // persisted to file
   char mqtt_user[33];    // observer_node: MQTT username ("" = anonymous)
   char mqtt_pwd[65];     // observer_node: MQTT password (never echoed back)
   char mqtt_topic[33];   // observer_node: topic prefix ("" = "meshcore/<node name>")
+  uint8_t mqtt_tls_insecure; // observer_node: 1 = skip TLS cert validation for mqtts://
+                             // (opt-in; default 0 = verify against pinned LE roots)
 };

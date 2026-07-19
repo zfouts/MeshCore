@@ -1,6 +1,10 @@
 # observer_node changelog
 
 ## Unreleased
+- MQTT TLS insecure opt-out: `set mqtt_tls_insecure on|off` (NodePrefs, default
+  0). When on, attaches no CA so esp-tls skips server-cert verification — for
+  private-CA / IP-addressed brokers. Encryption without authentication; per
+  node, echoed in the var dump only while on. Default still pins LE roots.
 - MQTT TLS: `set mqtt_host mqtts://host[:port]` (default 8883; explicit port
   wins). Broker cert verified against the Let's Encrypt production roots
   (X1/X2/YR/YE) pinned in `MqttCaCerts.h` — no per-device certs, no

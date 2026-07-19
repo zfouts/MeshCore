@@ -448,7 +448,14 @@ void halt() {
     esp_mqtt_client_config_t cfg = {};
   #if ESP_IDF_VERSION_MAJOR >= 5
     cfg.broker.address.uri = uri;
-    if (tls) cfg.broker.verification.certificate = OBS_MQTT_CA_PEM;
+    if (tls) {
+      // Insecure mode (`set mqtt_tls_insecure on`): attach no CA, so esp-tls
+      // does NOT verify the server cert -- for brokers behind a private CA or
+      // an IP/hostname the pinned LE roots can't vouch for. Opt-in per node;
+      // the default still pins the Let's Encrypt roots.
+      if (p->mqtt_tls_insecure) cfg.broker.verification.skip_cert_common_name_check = true;
+      else                      cfg.broker.verification.certificate = OBS_MQTT_CA_PEM;
+    }
     if (p->mqtt_user[0]) cfg.credentials.username = p->mqtt_user;
     if (p->mqtt_pwd[0])  cfg.credentials.authentication.password = p->mqtt_pwd;
     cfg.session.last_will.topic = lwt;
@@ -457,7 +464,10 @@ void halt() {
     cfg.session.keepalive = 30;
   #else
     cfg.uri = uri;
-    if (tls) cfg.cert_pem = OBS_MQTT_CA_PEM;
+    if (tls) {
+      if (p->mqtt_tls_insecure) cfg.skip_cert_common_name_check = true;
+      else                      cfg.cert_pem = OBS_MQTT_CA_PEM;
+    }
     if (p->mqtt_user[0]) cfg.username = p->mqtt_user;
     if (p->mqtt_pwd[0])  cfg.password = p->mqtt_pwd;
     cfg.lwt_topic = lwt;
