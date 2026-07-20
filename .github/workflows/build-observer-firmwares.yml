@@ -23,7 +23,9 @@ jobs:
 
       - name: Build Firmwares
         env:
-          FIRMWARE_VERSION: ${{ env.GIT_TAG_VERSION }}
+          # tag observer-v1.16.0 -> GIT_TAG_VERSION=v1.16.0 -> reported/filename
+          # version v1.16.0-observer-<sha> (build.sh appends the commit hash).
+          FIRMWARE_VERSION: ${{ env.GIT_TAG_VERSION }}-observer
         run: /usr/bin/env bash build.sh build-observer-firmwares
 
       - name: Upload Workflow Artifacts
