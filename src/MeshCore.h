@@ -53,6 +53,11 @@ public:
   virtual void onAfterTransmit() { }
   virtual void reboot() = 0;
   virtual void powerOff() { /* no op */ }
+  // Like powerOff(), but for an *unattended/solar* low-battery shutdown: the
+  // board should arm a self-recovery wake (e.g. wake when the cell recharges)
+  // rather than a button-only wake, so the node revives on its own at sunrise.
+  // Default falls back to powerOff() for boards without a voltage-wake path.
+  virtual void powerOffUntilCharged() { powerOff(); }
   // Called by example setup() functions to signal that boot is complete.
   // Boards may override to stop a boot-indicator LED sequence or similar.
   // Default no-op: boards that don't care need not implement anything.
@@ -64,6 +69,9 @@ public:
   virtual uint8_t getStartupReason() const = 0;
   virtual bool getBootloaderVersion(char* version, size_t max_len) { return false; }
   virtual bool startOTAUpdate(const char* id, char reply[]) { return false; }   // not supported
+  virtual bool setLoRaFemLnaEnabled(bool enable) { return false; }
+  virtual bool canControlLoRaFemLna() const { return false; }
+  virtual bool isLoRaFemLnaEnabled() const { return false; }
 
   // Power management interface (boards with power management override these)
   virtual bool isExternalPowered() { return false; }

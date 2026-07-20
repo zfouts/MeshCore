@@ -17,6 +17,16 @@ public:
 
     pinMode(14, OUTPUT);
     digitalWrite(14, HIGH); // Use external antenna
+#else
+    // The XIAO C6's 2.4GHz RF switch is unpowered until GPIO3 is driven LOW --
+    // without this WiFi/BLE/Zigbee transmit into nothing (the generic
+    // esp32-c6-devkitm-1 board profile doesn't run Seeed's initVariant()).
+    // GPIO14 LOW selects the built-in ceramic antenna.
+    pinMode(3, OUTPUT);
+    digitalWrite(3, LOW);  // power the RF switch
+    delay(100);
+    pinMode(14, OUTPUT);
+    digitalWrite(14, LOW); // built-in antenna
 #endif
   }
 

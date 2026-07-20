@@ -50,8 +50,17 @@ public:
     nrf_gpio_cfg_sense_input(digitalPinToInterrupt(g_ADigitalPinMap[PIN_USER_BTN]), NRF_GPIO_PIN_NOPULL, NRF_GPIO_PIN_SENSE_LOW);
 #endif
 
-    sd_power_system_off();
+    NRF52Board::powerOff();
   }
+
+#if NRF52_POWER_MANAGEMENT
+  // Solar/unattended low-battery shutdown. Unlike powerOff() (button-only wake),
+  // this routes through the low-voltage shutdown path, which arms LPCOMP voltage
+  // wake -- so the node revives itself when the panel recharges the cell at dawn.
+  void powerOffUntilCharged() override {
+    initiateShutdown(SHUTDOWN_REASON_LOW_VOLTAGE);
+  }
+#endif
 };
 
 #endif
