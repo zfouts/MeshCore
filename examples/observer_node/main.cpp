@@ -560,17 +560,24 @@ void halt() {
   // path data as adverts, but sampled at message time -- feeds the topology graph.
   extern "C" void observerMqttMessage(const char* kind, const char* channel,
                                       const char* from, const char* text, float snr,
-                                      const char* hops, int hops_n) {
+                                      const char* hops, int hops_n, uint32_t sender_ts) {
     if (!mqtt_client || !mqtt_connected) return;
     char esc_text[360], esc_who[48];
     mqttJsonEscape(text, esc_text, sizeof(esc_text));
     mqttJsonEscape(channel ? channel : (from ? from : "?"), esc_who, sizeof(esc_who));
-    char topic[104], payload[520];
+    char topic[104], payload[560];
     snprintf(topic, sizeof(topic), "%s/msg/%s", mqtt_prefix, kind);
     int n = snprintf(payload, sizeof(payload), "{\"%s\":\"%s\",\"text\":\"%s\",\"snr\":%.1f,\"hops_n\":%d",
                      channel ? "channel" : "from", esc_who, esc_text, (double)snr, hops_n);
     if (hops && hops[0])
       n += snprintf(payload + n, sizeof(payload) - n, ",\"hops\":\"%s\"", hops);
+    // sender_ts = the message's own embedded clock; rx_ts = our NTP receive time;
+    // skew_s = rx_ts - sender_ts (same fields/semantics as observerMqttAdvert).
+    uint32_t rx_ts = rtc_clock.getCurrentTime();
+    long skew = (long)rx_ts - (long)sender_ts;
+    n += snprintf(payload + n, sizeof(payload) - n,
+                  ",\"sender_ts\":%lu,\"rx_ts\":%lu,\"skew_s\":%ld",
+                  (unsigned long)sender_ts, (unsigned long)rx_ts, skew);
     n += snprintf(payload + n, sizeof(payload) - n, "}");
     if (n > 0 && n < (int)sizeof(payload))
       esp_mqtt_client_enqueue(mqtt_client, topic, payload, n, 0, false, true);

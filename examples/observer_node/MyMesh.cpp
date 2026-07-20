@@ -626,7 +626,7 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
 // no-op in ObserverNode.cpp elsewhere.
 extern "C" void observerMqttMessage(const char* kind, const char* channel,
                                     const char* from, const char* text, float snr,
-                                    const char* hops, int hops_n);
+                                    const char* hops, int hops_n, uint32_t sender_ts);
 
 // Format a received packet's ingress hop chain (flood-routed only) as hex, and
 // return the hop count (0 = heard direct). buf must hold MAX_PATH_SIZE*2 + 1.
@@ -648,7 +648,7 @@ void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t 
   markConnectionActive(from); // in case this is from a server, and we have a connection
 #ifdef WITH_OBSERVER_EXTRAS
   char _h[MAX_PATH_SIZE * 2 + 1]; int _hn = fmtRxHops(pkt, _h, sizeof(_h));
-  observerMqttMessage("dm", NULL, from.name, text, pkt ? pkt->getSNR() : 0.0f, _h, _hn);
+  observerMqttMessage("dm", NULL, from.name, text, pkt ? pkt->getSNR() : 0.0f, _h, _hn, sender_timestamp);
 #endif
   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
 }
@@ -666,7 +666,7 @@ void MyMesh::onSignedMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uin
   dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
 #ifdef WITH_OBSERVER_EXTRAS
   char _h[MAX_PATH_SIZE * 2 + 1]; int _hn = fmtRxHops(pkt, _h, sizeof(_h));
-  observerMqttMessage("dm", NULL, from.name, text, pkt ? pkt->getSNR() : 0.0f, _h, _hn);
+  observerMqttMessage("dm", NULL, from.name, text, pkt ? pkt->getSNR() : 0.0f, _h, _hn, sender_timestamp);
 #endif
   queueMessage(from, TXT_TYPE_SIGNED_PLAIN, pkt, sender_timestamp, sender_prefix, 4, text);
 }
@@ -679,7 +679,7 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
     ChannelDetails cd;
     const char* chname = (idx >= 0 && getChannel((uint8_t)idx, cd) && cd.name[0]) ? cd.name : "?";
     char _h[MAX_PATH_SIZE * 2 + 1]; int _hn = fmtRxHops(pkt, _h, sizeof(_h));
-    observerMqttMessage("channel", chname, NULL, text, pkt ? pkt->getSNR() : 0.0f, _h, _hn);
+    observerMqttMessage("channel", chname, NULL, text, pkt ? pkt->getSNR() : 0.0f, _h, _hn, timestamp);
   }
 #ifdef WITH_BOT_COMMANDS
   handleBotChannel(channel, pkt, timestamp, text); // bot answers on the configured channel

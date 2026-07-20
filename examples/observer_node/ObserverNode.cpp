@@ -502,10 +502,10 @@ extern "C" bool observerMqttStatus(char* buf, size_t bufsz);
 extern "C" __attribute__((weak)) bool observerMqttStatus(char*, size_t) { return false; }
 extern "C" void observerMqttMessage(const char* kind, const char* channel,
                                     const char* from, const char* text, float snr,
-                                    const char* hops, int hops_n);
+                                    const char* hops, int hops_n, uint32_t sender_ts);
 extern "C" __attribute__((weak)) void observerMqttMessage(const char*, const char*,
                                                           const char*, const char*, float,
-                                                          const char*, int) {}
+                                                          const char*, int, uint32_t) {}
 extern "C" void observerMqttAdvert(const uint8_t* pk4, const uint8_t* hash8, uint32_t adv_ts,
                                    const char* type, const char* name, float snr, int hops_n,
                                    const uint8_t* raw, int raw_len);

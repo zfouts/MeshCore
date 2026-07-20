@@ -226,10 +226,12 @@ Event-driven, at receipt, not retained, QoS 0, enqueued (never blocks the
 radio path that just delivered the message).
 
 ```json
-{"from":"zmobi","text":"on my way","snr":-7.5,"hops_n":1,"hops":"dd"}
+{"from":"zmobi","text":"on my way","snr":-7.5,"hops_n":1,"hops":"dd",
+ "sender_ts":1784504030,"rx_ts":1784504032,"skew_s":2}
 ```
 ```json
-{"channel":"#bot","text":"zmobi: !ping","snr":-9.0,"hops_n":0}
+{"channel":"#bot","text":"KJ5DHR: !path","snr":11.8,"hops_n":4,"hops":"51fb",
+ "sender_ts":1784504030,"rx_ts":1784504032,"skew_s":2}
 ```
 
 DMs carry `from` (contact name); channel messages carry `channel` (stored
@@ -237,6 +239,11 @@ channel name, `?` if the slot has none) and the sender is embedded in `text`
 as `<sender>: <message>` (that is the on-air group-message format). `hops` /
 `hops_n` are the same ingress-path data as §5.4 but sampled at message time —
 a second topology feed.
+
+`sender_ts` is the message's own embedded timestamp (the sender's clock, unix
+epoch s); `rx_ts` is this observer's NTP receive time; `skew_s` = `rx_ts -
+sender_ts` — the same clock-audit fields as `<prefix>/advert` (§5.7), so a
+consumer can flag senders with a bad clock from ordinary chat traffic too.
 
 **Operator warning:** this mirrors *every readable message* — including
 private channels the node holds keys for. Decrypted mesh traffic lands on the
