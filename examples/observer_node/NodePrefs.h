@@ -54,4 +54,6 @@ struct NodePrefs {  // persisted to file
   char mqtt_topic[33];   // observer_node: topic prefix ("" = "meshcore/<node name>")
   uint8_t mqtt_tls_insecure; // observer_node: 1 = skip TLS cert validation for mqtts://
                              // (opt-in; default 0 = verify against pinned LE roots)
+  uint8_t advert_dump;   // observer_node: 1 = publish each heard advert (with clock
+                         // skew + hash + raw hex) to <prefix>/advert (opt-in; default 0)
 };

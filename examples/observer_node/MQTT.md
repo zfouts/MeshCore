@@ -96,6 +96,7 @@ Changing any of them tears down and rebuilds the client.
 <prefix>/heard/<pk8>                advert ingress path   retained  QoS0
 <prefix>/msg/dm                     mirrored DM           not retained  QoS0
 <prefix>/msg/channel                mirrored channel msg  not retained  QoS0
+<prefix>/advert                     advert dump (opt-in)  not retained  QoS0
 <prefix>/send/<idx|name>            SUBSCRIBED (inbound)  —
 <shared>/send/<idx|name>            SUBSCRIBED (inbound)  —
 <prefix>/repeater/<pk8>/telemetry   probe builds only     retained  QoS0
@@ -258,6 +259,56 @@ moment a probe response arrives:
 `temp_c` omitted when the repeater reports no temperature. If you run probe
 builds and later disable probing, clear these retained topics (§1 rule 6).
 
+### 5.7 `<prefix>/advert` — advert dump (opt-in)
+
+Off by default; enable per node with `set advert_dump on`. Publishes one
+message per **advert** the node hears (event stream, not retained), for
+diagnosing node clocks and inspecting adverts byte-for-byte.
+
+```json
+{"pubkey":"bbc66b12","hash":"a1b2c3d4e5f60718","adv_ts":1784504030,
+ "rx_ts":1784504032,"skew_s":2,"type":"repeater","name":"Valhalla 3000",
+ "snr":7.0,"hops_n":2,"raw":"1102…"}
+```
+
+| Key | Meaning |
+|---|---|
+| `pubkey` | `<pk8>` — first 4 pubkey bytes, lowercase hex |
+| `hash` | 8-byte packet hash (payload+type, **path-independent**), 16 hex — same across relay copies of one advert; differs for a re-stamped advert. Use it to dedupe. |
+| `adv_ts` | the advertising node's **own clock** (unix epoch s), decoded from the advert |
+| `rx_ts` | this observer's NTP-disciplined **receive** time (unix epoch s) |
+| `skew_s` | `rx_ts - adv_ts` — the advertiser's clock error. ~0 = fine; large positive = node in the past; negative = ahead. (A node stuck on the ESP32 power-on seed reads ~+40,000,000.) |
+| `type` | `none \| chat \| repeater \| room \| sensor \| unknown` |
+| `name` | advertised node name (JSON-escaped) |
+| `snr` | advert SNR as heard here (dB) |
+| `hops_n` | hop count to reach us (`0` = direct) |
+| `raw` | the **full on-wire packet as hex** (header + path + payload) |
+
+**Decoding `raw`** (bytes, offsets into the hex-decoded blob):
+
+```
+off 0   header       1B   bits[1:0]=route (1=FLOOD), bits[5:2]=payload type (4=ADVERT), bits[7:6]=ver
+off 1   path_len     1B   hash_size = (b>>6)+1;  hash_count = b & 0x3F
+off 2   path         hash_count * hash_size bytes   (each hop = leading byte(s) of a relay pubkey)
+        --- payload (advert), starts at off = 2 + path_bytes ---
++0      public key   32B
++32     timestamp    4B   LE uint32, unix epoch s  == adv_ts
++36     signature    64B  Ed25519 over pubkey+timestamp+app_data
++100    app flags    1B   0x0F=type; 0x10=has lat/lon; 0x80=has name
++101    latitude     4B   LE int32, degrees × 1e6   (present iff flag 0x10)
++105    longitude    4B   LE int32, degrees × 1e6   (present iff flag 0x10)
++109    node name    rest (present iff flag 0x80)
+```
+
+Note the timestamp's absolute offset shifts with `hop_count` (more hops → more
+path bytes before the payload). Adverts are **signed, not encrypted**, so the
+whole payload decodes with no keys — unlike channel/DM message payloads.
+
+For a fleet clock audit, subscribe to `<prefix>/advert`, group by `pubkey`,
+and watch `skew_s`: a few nodes with a large constant skew are the ones with a
+broken/unsynced clock. `hash` lets you tell a genuinely re-stamped advert from
+the same advert re-heard via a different path.
+
 ---
 
 ## 6. Inbound: the MQTT → mesh send bridge
@@ -385,6 +436,7 @@ see §6). Read-only dashboards can ignore this and the per-user fleet topic.
 | `contact/*` roster walk | 300 s | `OBS_MQTT_CONTACTS_INTERVAL_S` |
 | `heard/*` topology | 180 s | `OBS_MQTT_HEARD_INTERVAL_S` |
 | `msg/*` mirror | at receipt | — |
+| `advert` dump (opt-in) | per advert heard | `set advert_dump on\|off` |
 | `repeater/*` (probe builds) | at probe response | probe tunables, see `ObserverProbe.h` |
 | Send-bridge budget | 6 msg/min, queue 4 | `MQTT_SEND_MAX_PER_MIN` |
 

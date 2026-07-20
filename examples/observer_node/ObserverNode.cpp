@@ -506,6 +506,12 @@ extern "C" void observerMqttMessage(const char* kind, const char* channel,
 extern "C" __attribute__((weak)) void observerMqttMessage(const char*, const char*,
                                                           const char*, const char*, float,
                                                           const char*, int) {}
+extern "C" void observerMqttAdvert(const uint8_t* pk4, const uint8_t* hash8, uint32_t adv_ts,
+                                   const char* type, const char* name, float snr, int hops_n,
+                                   const uint8_t* raw, int raw_len);
+extern "C" __attribute__((weak)) void observerMqttAdvert(const uint8_t*, const uint8_t*, uint32_t,
+                                                         const char*, const char*, float, int,
+                                                         const uint8_t*, int) {}
 
 // `set bot_enable 0|1`, `set bot_channel <idx|off|name|#tag|name,b64psk>`,
 // `set bot_control_channel <same syntax>`. Returns true if handled.
@@ -521,6 +527,11 @@ bool MyMesh::observerSetVar(const char* name, const char* value) {
     _prefs.mqtt_tls_insecure = (value[0] == '1' || value[0] == 'o' /*on*/) ? 1 : 0;
     savePrefs();
     observerApplyMqtt();   // rebuild the client with the new verification mode
+    return true;
+  }
+  if (strcmp(name, "advert_dump") == 0) {
+    _prefs.advert_dump = (value[0] == '1' || value[0] == 'o' /*on*/) ? 1 : 0;
+    savePrefs();
     return true;
   }
   bool is_ssid = strcmp(name, "wifi_ssid") == 0;

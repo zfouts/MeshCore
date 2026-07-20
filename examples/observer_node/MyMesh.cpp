@@ -353,8 +353,33 @@ void MyMesh::onContactsFull() {
   }
 }
 
+#ifdef WITH_OBSERVER_EXTRAS
+#include <helpers/AdvertDataHelpers.h>
+extern "C" void observerMqttAdvert(const uint8_t* pk4, const uint8_t* hash8, uint32_t adv_ts,
+                                   const char* type, const char* name, float snr, int hops_n,
+                                   const uint8_t* raw, int raw_len);
+#endif
+
 void MyMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, uint32_t timestamp, const uint8_t* app_data, size_t app_data_len) {
   cur_advert_snr_x4 = (int8_t)(packet->getSNR() * 4);
+#ifdef WITH_OBSERVER_EXTRAS
+  if (_prefs.advert_dump) {
+    // `timestamp` is the core's parse of the advert's own clock field; publish
+    // it alongside the raw packet bytes so a bad value can be checked against
+    // the wire (payload[32..35], LE uint32).
+    AdvertDataParser parser(app_data, app_data_len);
+    static const char* TS[] = {"none", "chat", "repeater", "room", "sensor"};
+    uint8_t ty = parser.getType();
+    uint8_t rawbuf[MAX_TRANS_UNIT];
+    int rlen = packet->writeTo(rawbuf);
+    uint8_t hash[MAX_HASH_SIZE];
+    packet->calculatePacketHash(hash);
+    observerMqttAdvert(id.pub_key, hash, timestamp,
+                       (ty <= ADV_TYPE_SENSOR) ? TS[ty] : "unknown",
+                       parser.getName(), packet->getSNR(),
+                       packet->getPathHashCount(), rawbuf, rlen);
+  }
+#endif
   BaseChatMesh::onAdvertRecv(packet, id, timestamp, app_data, app_data_len);
 }
 

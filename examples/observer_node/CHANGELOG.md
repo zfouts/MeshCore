@@ -1,6 +1,15 @@
 # observer_node changelog
 
 ## Unreleased
+- Advert dump: `set advert_dump on` (persisted, default off) publishes each
+  heard advert to `<prefix>/advert` — pubkey, 8-byte packet hash, the advert's
+  own timestamp (`adv_ts`), our NTP receive time (`rx_ts`), computed clock
+  skew (`skew_s`), type/name/snr/hops, and the full packet as hex (`raw`).
+  Built for auditing node clocks (which nodes advertise a bad timestamp) and
+  byte-level advert decode; verified byte-faithful (adv_ts == wire bytes).
+  Tap is `onAdvertRecv` (adverts only, non-blocking enqueue).
+- Fix: `mqtt_tls_insecure` was in NodePrefs but never in the DataStore
+  load/save, so it didn't persist; added to both (with `advert_dump`).
 - Per-user topic namespace (multi-user safety): default prefix is now
   `meshcore/<mqtt_user>/<node_name>` (was `meshcore/<node_name>`), so the
   username segment lines up with a broker `meshcore/%u/#` ACL and each user is

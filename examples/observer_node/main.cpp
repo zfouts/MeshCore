@@ -576,6 +576,38 @@ void halt() {
       esp_mqtt_client_enqueue(mqtt_client, topic, payload, n, 0, false, true);
   }
 
+  // Advert dump (`set advert_dump on`): publish each heard advert to
+  // <prefix>/advert. `adv_ts` is the advertising node's OWN clock (from the
+  // advert); `rx_ts` is our NTP-disciplined receive time; `skew_s` = rx_ts -
+  // adv_ts is the node's clock error (huge positive -> node stuck in the past;
+  // negative/future -> node ahead). `hash` (payload+type, path-independent) lets
+  // a consumer group relay copies of one advert vs distinct re-stamped adverts.
+  // `raw` is the full packet as hex for byte-level decode. Built for diagnosing
+  // which nodes advertise a bad timestamp. Enqueued (non-blocking, RX-safe).
+  extern "C" void observerMqttAdvert(const uint8_t* pk4, const uint8_t* hash8, uint32_t adv_ts,
+                                     const char* type, const char* name, float snr, int hops_n,
+                                     const uint8_t* raw, int raw_len) {
+    if (!mqtt_client || !mqtt_connected) return;
+    uint32_t rx_ts = rtc_clock.getCurrentTime();
+    long skew = (long)rx_ts - (long)adv_ts;
+    char pk[9];  for (int b = 0; b < 4; b++) snprintf(pk + b * 2, 3, "%02x", pk4[b]);
+    char hh[17]; for (int b = 0; b < 8; b++) snprintf(hh + b * 2, 3, "%02x", hash8[b]);
+    char rawhex[MAX_TRANS_UNIT * 2 + 1]; int ho = 0;
+    for (int b = 0; b < raw_len && ho + 2 < (int)sizeof(rawhex); b++)
+      ho += snprintf(rawhex + ho, sizeof(rawhex) - ho, "%02x", raw[b]);
+    rawhex[ho] = 0;
+    char esc_name[64]; mqttJsonEscape(name ? name : "", esc_name, sizeof(esc_name));
+    char topic[112]; snprintf(topic, sizeof(topic), "%s/advert", mqtt_prefix);
+    char payload[768];
+    int n = snprintf(payload, sizeof(payload),
+      "{\"pubkey\":\"%s\",\"hash\":\"%s\",\"adv_ts\":%lu,\"rx_ts\":%lu,\"skew_s\":%ld,"
+      "\"type\":\"%s\",\"name\":\"%s\",\"snr\":%.1f,\"hops_n\":%d,\"raw\":\"%s\"}",
+      pk, hh, (unsigned long)adv_ts, (unsigned long)rx_ts, skew, type, esc_name,
+      (double)snr, hops_n, rawhex);
+    if (n > 0 && n < (int)sizeof(payload))
+      esp_mqtt_client_enqueue(mqtt_client, topic, payload, n, 0, false, true);
+  }
+
   #ifndef OBS_MQTT_CONTACTS_INTERVAL_S
   #define OBS_MQTT_CONTACTS_INTERVAL_S 300
   #endif
