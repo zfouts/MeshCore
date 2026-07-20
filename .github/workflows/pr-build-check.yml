@@ -46,9 +46,10 @@ jobs:
           - wio_wm1110_repeater
           # SX1276 (ESP32)
           - Tbeam_SX1276_repeater
-          # combined_node (this fork's own variant): cover both toolchains
-          - Xiao_S3_WIO_combined_node_usb
-          - Xiao_nrf52_combined_node_ble
+          # this fork's own variants (fleet_node + observer_node): cover both toolchains
+          - Xiao_S3_WIO_fleet_node_usb
+          - Xiao_nrf52_fleet_node_ble
+          - heltec_v4_observer_node_wifi
 
     steps:
       - name: Clone Repo
