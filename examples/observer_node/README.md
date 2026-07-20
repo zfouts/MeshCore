@@ -19,7 +19,14 @@ messages explicitly injected through the MQTT send bridge below.
   chain each advert flooded over to reach this node, plus the advert's SNR as
   received here (`hops_n`=0 → direct link to the origin).
 - **Message mirror** — readable DMs/channel traffic to `<prefix>/msg/*` with
-  SNR and ingress path.
+  SNR, ingress path, and clock fields: `sender_ts` (message's embedded
+  timestamp), `rx_ts` (our NTP receive time), and `skew_s = rx_ts - sender_ts`,
+  so a consumer can flag senders with a bad clock from ordinary chat.
+- **Advert dump** (opt-in, `set advert_dump on`) — publishes each heard advert
+  to `<prefix>/advert`: the advertiser's own clock (`adv_ts`), our NTP receive
+  time (`rx_ts`), the computed `skew_s`, an 8-byte packet hash (groups relay
+  copies), and the full packet as hex (`raw`). Built for auditing node clocks
+  (which nodes advertise a bad timestamp) and byte-level advert decode.
 - **MQTT → mesh send bridge** — publish text to `<prefix>/send/<channel>` and
   the node transmits it as a channel message (as this node's name).
   `<channel>` is a slot index (`send/0`) **or a channel name** (`send/Public`,
@@ -33,13 +40,36 @@ messages explicitly injected through the MQTT send bridge below.
   (default 6) with a 4-deep queue; overflow is dropped. Note this makes the
   node TX on demand, so anyone with broker write access spends your mesh's
   airtime.
-- **Fleet-wide send topic** — every observer also subscribes to
-  `MQTT_SHARED_SEND_PREFIX/send/+` (default `meshcore/all`), so a single
-  publish reaches the whole fleet. **For observers on disjoint meshes only**
+- **Per-user fleet send topic** — every observer also subscribes to
+  `meshcore/<user>/all/send/+`, so a single publish reaches all of *that
+  user's* nodes (inside their ACL namespace). **For disjoint meshes only**
   (one bridge per mesh): two subscribers on the *same* mesh each transmit
   their own copy — packet dedup can't collapse them (different timestamps) and
   the channel sees doubles. Same-mesh sends should use the per-node
-  `<prefix>/send/` topic. `-D MQTT_SHARED_SEND_PREFIX='""'` disables it.
+  `<prefix>/send/` topic. `-D MQTT_SHARED_SEND_ENABLE=0` disables it.
+
+## Multi-user topic namespace
+
+Topics are namespaced per user for safety:
+
+```
+<prefix> = meshcore/<mqtt_user>/<node_name>
+```
+
+The username segment is the MQTT login (`mqtt_user`), so it lines up with a
+mosquitto `topic readwrite meshcore/%u/#` ACL — each user is isolated to their
+own subtree. Anonymous (no `mqtt_user`) falls back to `meshcore/<node_name>`.
+`set mqtt_topic <string>` overrides the whole prefix verbatim. See MQTT.md §3.1.
+
+## Robustness
+
+- **NTP** — the node disciplines its clock from `pool.ntp.org` (SNTP) on every
+  WiFi connect, so `rx_ts`/`skew_s` and TLS cert dates are trustworthy without
+  a manual `clock sync`.
+- **Reconnect watchdog** — if MQTT stays down while WiFi is up, the node
+  escalates (full client re-init, then `ESP.restart()` at `OBS_MQTT_REBOOT_S`,
+  default 300 s) so the bridge self-heals instead of wedging. Arms only after a
+  first successful connect.
 
 ## Optional active prober (off by default)
 
@@ -59,31 +89,55 @@ are all `-D` overridable — see `ObserverProbe.h`.
 ## MQTT topics
 
 Full interface spec (payload schemas, QoS/retain rules, timing, send-bridge
-contract, adoption checklist): **[MQTT.md](MQTT.md)**.
+contract, byte-level advert decode, frontend guide, adoption checklist):
+**[MQTT.md](MQTT.md)**.
 
 ```
+<prefix> = meshcore/<mqtt_user>/<node_name>
+
+<prefix>/status                    online/offline (retained, LWT)
+<prefix>/telemetry, /sensors       this node's own health / attached sensors
 <prefix>/contact/<pubkey>          roster (retained) — every heard node
 <prefix>/heard/<pk>                advert ingress: hops + SNR (retained)
-<prefix>/msg/dm, /msg/channel      message mirror (at receipt)
+<prefix>/msg/dm, /msg/channel      message mirror + clock skew (at receipt)
+<prefix>/advert                    advert dump (opt-in): clock skew + raw hex
 <prefix>/send/<idx|name>           SUBSCRIBED — inbound text → mesh channel
-meshcore/all/send/<idx|name>       SUBSCRIBED — fleet-wide send (disjoint meshes)
-<prefix>/telemetry, /sensors       this node's own health / attached sensors
-<prefix>/status                    online/offline (retained, LWT)
+meshcore/<user>/all/send/<idx|name>  SUBSCRIBED — per-user fleet send
 <prefix>/repeater/<pk>/telemetry   probe builds only (retained)
 <prefix>/repeater/<pk>/path        probe builds only (retained)
 ```
 
-`<prefix>` = `mqtt_topic` or `meshcore/<node_name>`.
-
 ## Build
 
-`_wifi` only (the output path is MQTT). Configure Wi-Fi + broker at
-runtime over USB: `set wifi_ssid` / `set wifi_pwd`,
-`set mqtt_host <[mqtt(s)://]host[:port]>` (+ `mqtt_user` / `mqtt_pwd`).
-`mqtts://` = TLS, verified against the Let's Encrypt roots pinned in
-`MqttCaCerts.h` (see MQTT.md §2).
+`_wifi` only (the output path is MQTT). Supported boards (ESP32, all with
+the same feature set):
 
 ```
 pio run -e heltec_v4_observer_node_wifi
+pio run -e Heltec_v3_observer_node_wifi
 pio run -e Xiao_S3_WIO_observer_node_wifi
+pio run -e Xiao_C6_observer_node_wifi
 ```
+
+Configure Wi-Fi, broker, and credentials at runtime over USB:
+
+```
+set wifi_ssid <ssid>
+set wifi_pwd  <pwd>
+set mqtt_host <[mqtt(s)://]host[:port]>   # mqtt:// plain (1883) or mqtts:// TLS (8883)
+set mqtt_user <user>                       # becomes the topic namespace segment
+set mqtt_pwd  <pwd>
+set advert_dump on                         # optional: clock-audit advert stream
+```
+
+`mqtts://` verifies the broker against the Let's Encrypt roots pinned in
+`MqttCaCerts.h`; `set mqtt_tls_insecure on` skips verification (encryption
+without authentication — trusted networks only). See MQTT.md §2.
+
+### Releases (CI)
+
+Tag `observer-v1.16.<n>` and push — the `build-observer-firmwares` GitHub
+Action builds all four boards and publishes a GitHub Release with
+`<board>-v1.16.<n>-observer-<sha>.bin` (+ `-merged.bin` for a fresh flash).
+Ad-hoc build (artifacts only, no release):
+`gh workflow run build-observer-firmwares.yml --ref main`.
