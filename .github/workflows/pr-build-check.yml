@@ -50,6 +50,7 @@ jobs:
           - Xiao_S3_WIO_fleet_node_usb
           - Xiao_nrf52_fleet_node_ble
           - heltec_v4_observer_node_wifi
+          - Heltec_v3_observer_node_wifi
 
     steps:
       - name: Clone Repo
