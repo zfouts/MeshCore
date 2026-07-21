@@ -299,11 +299,13 @@ void halt() {
   // itself -- nothing here can stall the mesh loop, unlike the blocking
   // !path HTTP call.
   //
-  // TLS: `set mqtt_host mqtts://host[:port]` (default port 8883). The broker
-  // cert is verified against the Let's Encrypt production roots PINNED in
-  // MqttCaCerts.h -- LE-issued broker certs work with no per-device cert
-  // provisioning, anything else is rejected. No insecure-skip on purpose:
-  // TLS without verification is theater.
+  // TLS: `set mqtt_host wss://host[:port]` (MQTT over TLS WebSockets, default
+  // 443 -- the recommended transport; TLS terminates at an HTTPS ingress in
+  // front of the broker) or `mqtts://host[:port]` (native TLS, default 8883).
+  // Either way the server cert is verified against the Let's Encrypt
+  // production roots PINNED in MqttCaCerts.h -- LE-issued certs work with no
+  // per-device cert provisioning, anything else is rejected (opt-out:
+  // mqtt_tls_insecure). Plain mqtt:// is deprecated -- lab/bench only.
   //
   // The ONE inbound path is the send bridge: <prefix>/send/<channel_idx>
   // payloads are posted as channel text into a channel this node already

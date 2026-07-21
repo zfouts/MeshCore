@@ -45,17 +45,26 @@ make the contract safe and predictable, independent of firmware internals:
 
 | Parameter    | Value |
 |---|---|
-| Transport    | Plain TCP `mqtt://` (default) or TLS via `mqtts://` host prefix |
-| Port         | From `mqtt_host` (`[mqtt(s)://]host[:port]`); explicit port always wins, defaults **1883** plain / **8883** TLS |
+| Transport    | **`wss://` (recommended)** MQTT over TLS WebSockets; also `mqtts://` (native TLS), `ws://` (plain WebSockets) and `mqtt://` (plain TCP, **deprecated** — unencrypted, kept for lab/bench use only) |
+| Port         | From `mqtt_host` (`[scheme://]host[:port]`); explicit port always wins, defaults **443** wss / **8883** mqtts / **80** ws / **1883** mqtt. No URI path — the WebSocket handshake always requests `/` |
 | TLS trust    | Broker cert verified against the Let's Encrypt production roots **pinned in firmware** (`MqttCaCerts.h`); other CAs rejected, no insecure-skip |
 | Auth         | Optional username/password (`mqtt_user` / `mqtt_pwd`; empty = anonymous) |
 | Keepalive    | **30 s** |
 | Clean session| Yes (esp_mqtt default) |
 | Reconnect    | Automatic, owned by the MQTT client task |
 
-TLS example: `set mqtt_host mqtts://broker.example.org:31883`. The CA pin is
-deliberate — the device trusts LE-issued broker certs and nothing else; if
-the broker moves to another CA, refresh `MqttCaCerts.h` and reflash.
+Examples: `set mqtt_host wss://broker.example.org` (TLS WebSockets on 443,
+the recommended transport — rides a standard HTTPS ingress / Cloudflare, TLS
+terminates at the proxy with an ordinary Let's Encrypt cert) or
+`set mqtt_host mqtts://broker.example.org:31883` (native TLS straight to the
+broker). The CA pin is deliberate — the device trusts LE-issued broker certs
+and nothing else; if the broker moves to another CA, refresh `MqttCaCerts.h`
+and reflash.
+
+Note wss/mqtts differ only in framing, not in on-device cost: both run the
+same esp-tls/mbedtls stack, so the TLS heap footprint and the fragmented-heap
+re-handshake fragility apply equally. The reconnect watchdog is the
+mitigation either way.
 
 **Insecure opt-out:** `set mqtt_tls_insecure on` disables server-cert
 verification entirely (encryption without authentication) — for brokers
@@ -393,11 +402,11 @@ Notes for a read-only web or app client (as opposed to a firmware adopter).
 
 ### 7.1 Connecting from a browser
 
-The broker listener the firmware uses is plain TCP MQTT — a browser **cannot**
-open that. Point a web client (e.g. `mqtt.js`) at an **MQTT-over-WebSocket**
-listener on the same broker (mosquitto `listener <port>` + `protocol
-websockets`, or `wss://` behind a proxy). Native apps can use the TCP listener
-directly. Log in with the user's credentials; with `meshcore/%u/#` ACLs the
+Point a web client (e.g. `mqtt.js`) at the same **MQTT-over-WebSocket**
+listener the firmware uses (mosquitto `listener <port>` + `protocol
+websockets`, with TLS terminated at the ingress in front of it) — since the
+firmware moved to `wss://`, browsers and devices share one endpoint. Native
+apps can use a TCP listener where the broker still exposes one. Log in with the user's credentials; with `meshcore/%u/#` ACLs the
 client only sees its own subtree, so subscribe to `meshcore/<username>/#`.
 
 ### 7.2 Build state from retained topics

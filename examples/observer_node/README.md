@@ -124,15 +124,21 @@ Configure Wi-Fi, broker, and credentials at runtime over USB:
 ```
 set wifi_ssid <ssid>
 set wifi_pwd  <pwd>
-set mqtt_host <[mqtt(s)://]host[:port]>   # mqtt:// plain (1883) or mqtts:// TLS (8883)
+set mqtt_host <[scheme://]host[:port]>    # wss:// TLS WebSockets (443, recommended);
+                                          # also mqtts:// (8883), ws:// (80),
+                                          # mqtt:// plain TCP (1883, deprecated)
 set mqtt_user <user>                       # becomes the topic namespace segment
 set mqtt_pwd  <pwd>
 set advert_dump on                         # optional: clock-audit advert stream
 ```
 
-`mqtts://` verifies the broker against the Let's Encrypt roots pinned in
+`wss://` (MQTT over TLS WebSockets) is the recommended transport: it rides a
+standard HTTPS ingress on 443, so the broker needs no cert of its own — TLS
+terminates at the proxy with an ordinary Let's Encrypt cert. Both `wss://`
+and `mqtts://` verify the server against the LE roots pinned in
 `MqttCaCerts.h`; `set mqtt_tls_insecure on` skips verification (encryption
-without authentication — trusted networks only). See MQTT.md §2.
+without authentication — trusted networks only). Plain `mqtt://` is
+deprecated — unencrypted, lab/bench use only. See MQTT.md §2.
 
 ### Releases (CI)
 

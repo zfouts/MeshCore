@@ -1,6 +1,16 @@
 # observer_node changelog
 
 ## Unreleased
+- MQTT over WebSockets: `mqtt_host` accepts `wss://` (TLS, default 443) and
+  `ws://` (plain, default 80) alongside `mqtts://`/`mqtt://`. `wss://` is now
+  the recommended transport — encrypted end-to-end through a standard HTTPS
+  ingress (TLS terminates at the proxy, ordinary LE cert, no broker certfile),
+  single 443 endpoint shared with browser clients. Same pinned-LE-roots
+  verification and `mqtt_tls_insecure` opt-out as `mqtts://`. No URI path
+  support (handshake requests `/`). Plain `mqtt://` is deprecated
+  (unencrypted; lab/bench only). Note: wss uses the same esp-tls/mbedtls
+  stack as mqtts — the TLS heap footprint and re-handshake fragility are
+  unchanged; the reconnect watchdog remains the mitigation.
 - Advert dump: `set advert_dump on` (persisted, default off) publishes each
   heard advert to `<prefix>/advert` — pubkey, 8-byte packet hash, the advert's
   own timestamp (`adv_ts`), our NTP receive time (`rx_ts`), computed clock
