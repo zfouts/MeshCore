@@ -476,13 +476,21 @@ void halt() {
     if (mqtt_send_q == NULL)             // created once, survives client rebuilds
       mqtt_send_q = xQueueCreate(MQTT_SEND_QUEUE_DEPTH, sizeof(MqttSendMsg));
     // esp_mqtt copies the config strings at init, but keep them static anyway.
+    // Schemes: mqtt:// mqtts:// (native TCP) plus ws:// wss:// (MQTT over
+    // WebSockets — lets the broker live behind a single 443 ingress /
+    // Cloudflare; arduino-esp32 builds ship CONFIG_MQTT_TRANSPORT_WEBSOCKET).
+    // No URI path support: `set mqtt_host wss://host[:port]` only.
     static char uri[96], lwt[104];
     const char* host = p->mqtt_host;
+    const char* scheme = "mqtt";
+    const char* defport = ":1883";
     bool tls = false;
-    if (strncmp(host, "mqtts://", 8) == 0)     { tls = true; host += 8; }
-    else if (strncmp(host, "mqtt://", 7) == 0) { host += 7; }
-    snprintf(uri, sizeof(uri), "%s://%s%s", tls ? "mqtts" : "mqtt", host,
-             strchr(host, ':') ? "" : (tls ? ":8883" : ":1883"));
+    if      (strncmp(host, "mqtts://", 8) == 0) { tls = true; host += 8; scheme = "mqtts"; defport = ":8883"; }
+    else if (strncmp(host, "mqtt://",  7) == 0) {             host += 7; }
+    else if (strncmp(host, "wss://",   6) == 0) { tls = true; host += 6; scheme = "wss";   defport = ":443"; }
+    else if (strncmp(host, "ws://",    5) == 0) {             host += 5; scheme = "ws";    defport = ":80"; }
+    snprintf(uri, sizeof(uri), "%s://%s%s", scheme, host,
+             strchr(host, ':') ? "" : defport);
     snprintf(lwt, sizeof(lwt), "%s/status", mqtt_prefix);
     esp_mqtt_client_config_t cfg = {};
   #if ESP_IDF_VERSION_MAJOR >= 5
