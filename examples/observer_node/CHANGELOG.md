@@ -1,6 +1,15 @@
 # observer_node changelog
 
 ## Unreleased
+- Periodic zero-hop self-advert default lowered from every 15 min to every 6 h
+  (`OBS_ADVERT_INTERVAL_S` 900 -> 21600). The 15-min cadence was tuned for the
+  mobile/wardrive case; for stationary observers it was needless chatter.
+- `set advert_interval <s>` is now wired up in observer builds (previously the
+  build-time default was the only knob — the runtime parser lived in
+  fleet_node's bot-command surface, which observers compile out). Set over the
+  companion `set` surface (USB/BLE/TCP, e.g. meshcli), persisted across
+  reboots. 0 = off, `-` = restore the build default, max 86400 (24 h);
+  echoed in the custom-vars dump as `advert_interval:<s>` (effective value).
 - MQTT over WebSockets: `mqtt_host` accepts `wss://` (TLS, default 443) and
   `ws://` (plain, default 80) alongside `mqtts://`/`mqtt://`. `wss://` is now
   the recommended transport — encrypted end-to-end through a standard HTTPS

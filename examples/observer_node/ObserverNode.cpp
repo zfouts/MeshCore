@@ -58,7 +58,9 @@ void MyMesh::observerBegin() {
   memset(_observer->neighbours, 0, sizeof(_observer->neighbours));
   _observer->stats.boot_rtc = getRTCClock()->getCurrentTime();
   _observer->next_advert_ms = 0;
-  _observer->advert_interval_s = OBS_ADVERT_INTERVAL_S;
+  _observer->advert_interval_s = (_prefs.advert_interval_s == 0xFFFFFFFF)
+                                   ? OBS_ADVERT_INTERVAL_S      // unset -> build default
+                                   : _prefs.advert_interval_s;  // persisted `set advert_interval`
   _observer->low_batt_strikes = 0;
   _observer->wdt_on = false;
   // bot_enabled / bot_channel live in _prefs (already loaded by begin()).
@@ -197,8 +199,8 @@ void MyMesh::observerLoop() {
   }
 
   // Periodic zero-hop location advert so the mesh tracks a moving node.
-  // Cadence is runtime-adjustable (`@name set advert_interval <s>`, 0 = off);
-  // a reboot restores the build default (OBS_ADVERT_INTERVAL_S).
+  // Cadence is runtime-adjustable and persisted (`set advert_interval <s>`
+  // over USB/BLE/TCP, 0 = off, `-` = restore build default OBS_ADVERT_INTERVAL_S).
   if (_observer->advert_interval_s > 0 && millisHasNowPassed(_observer->next_advert_ms)) {
     advert();
     _observer->next_advert_ms = futureMillis(_observer->advert_interval_s * 1000UL);
@@ -534,6 +536,27 @@ bool MyMesh::observerSetVar(const char* name, const char* value) {
     savePrefs();
     return true;
   }
+  if (strcmp(name, "advert_interval") == 0) {
+    // Periodic zero-hop self-advert cadence, seconds. Persisted. 0 = off;
+    // `-` restores the build default (OBS_ADVERT_INTERVAL_S). Garbage or
+    // out-of-range (> 86400) is rejected, not coerced -- atoi'ing "abc" to 0
+    // would silently switch adverts off.
+    uint32_t s;
+    if (strcmp(value, "-") == 0) {
+      s = 0xFFFFFFFF;   // unset sentinel: fall back to the build default
+    } else {
+      char* endp;
+      long n = strtol(value, &endp, 10);
+      if (*endp || n < 0 || n > 86400) return false;
+      s = (uint32_t)n;
+    }
+    _prefs.advert_interval_s = s;
+    savePrefs();
+    uint32_t eff = (s == 0xFFFFFFFF) ? OBS_ADVERT_INTERVAL_S : s;
+    _observer->advert_interval_s = eff;
+    if (eff > 0) _observer->next_advert_ms = futureMillis(eff * 1000UL);
+    return true;
+  }
   bool is_ssid = strcmp(name, "wifi_ssid") == 0;
   if (is_ssid || strcmp(name, "wifi_pwd") == 0) {
     // `-` clears (meshcli can't send an empty value); an SSID/password of a
@@ -769,6 +792,10 @@ char* MyMesh::observerAppendVars(char* base, char* dp, const char* end) {
 
   m = observerFormatChannelVar(kv, 0, sizeof(kv), "bot_control_channel", _prefs.bot_control_channel);
   if (m > 0) dp = appendVarKV(dp, end, &first, kv);
+
+  // Effective cadence (build default until `set advert_interval` overrides it).
+  snprintf(kv, sizeof(kv), "advert_interval:%lu", (unsigned long)_observer->advert_interval_s);
+  dp = appendVarKV(dp, end, &first, kv);
 
   // WiFi + MQTT status first (these are what an operator checks live); ':' in
   // a value is echoed as ';' so it can't break the name:value,... framing (the

@@ -26,7 +26,7 @@
 #define OBS_GPS_INTERVAL_S 120          // GPS refresh interval while mobile
 #endif
 #ifndef OBS_ADVERT_INTERVAL_S
-#define OBS_ADVERT_INTERVAL_S 900       // periodic zero-hop location advert (0 = off)
+#define OBS_ADVERT_INTERVAL_S 21600     // periodic zero-hop location advert (0 = off)
 #endif
 #ifndef OBS_WDT_TIMEOUT_S
 #define OBS_WDT_TIMEOUT_S 30            // hardware watchdog timeout (ESP32)

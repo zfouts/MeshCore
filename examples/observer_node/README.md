@@ -7,8 +7,9 @@ It is a monitor, not a chat/relay node: bot commands and the relay policy are
 not part of this tree, it does not forward packets, and in the default build it
 **never solicits anything from the mesh** — everything it publishes is heard,
 not asked for. Its only transmissions are its own periodic zero-hop advert
-(`OBS_ADVERT_INTERVAL_S`, 15 min default, `set advert_interval 0` to
-silence it), protocol ACKs to traffic addressed directly to it, and channel
+(`OBS_ADVERT_INTERVAL_S`, 6 h default; override at runtime with
+`set advert_interval <s>`, persisted, 0 = off), protocol
+ACKs to traffic addressed directly to it, and channel
 messages explicitly injected through the MQTT send bridge below.
 
 ## What it does
@@ -130,6 +131,9 @@ set mqtt_host <[scheme://]host[:port]>    # wss:// TLS WebSockets (443, recommen
 set mqtt_user <user>                       # becomes the topic namespace segment
 set mqtt_pwd  <pwd>
 set advert_dump on                         # optional: clock-audit advert stream
+set advert_interval <s>                    # optional: self-advert cadence in seconds
+                                           # (persisted; 0 = off, `-` = build default
+                                           # of 6 h, max 86400)
 ```
 
 `wss://` (MQTT over TLS WebSockets) is the recommended transport: it rides a

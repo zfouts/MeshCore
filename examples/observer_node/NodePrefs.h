@@ -56,4 +56,7 @@ struct NodePrefs {  // persisted to file
                              // (opt-in; default 0 = verify against pinned LE roots)
   uint8_t advert_dump;   // observer_node: 1 = publish each heard advert (with clock
                          // skew + hash + raw hex) to <prefix>/advert (opt-in; default 0)
+  uint32_t advert_interval_s; // observer_node: periodic zero-hop self-advert cadence in
+                              // seconds, set via `set advert_interval` (0 = off;
+                              // 0xFFFFFFFF = unset -> build default OBS_ADVERT_INTERVAL_S)
 };

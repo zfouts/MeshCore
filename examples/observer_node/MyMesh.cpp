@@ -1036,6 +1036,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.bot_channel = 0xFF;    // channel bot off until configured (control channel only)
   _prefs.ble_enabled = 1;       // BLE advertising on by default (toggle via `!ble off`)
   _prefs.bot_control_channel = 0xFF; // control channel off until configured
+  _prefs.advert_interval_s = 0xFFFFFFFF; // unset -> build default (OBS_ADVERT_INTERVAL_S)
 #ifdef WIFI_SSID
   // compile-time creds (e.g. the C6 wifi env) are just the first-boot default;
   // `set wifi_ssid` / `set wifi_pwd` via meshcli override and persist
