@@ -784,6 +784,41 @@ char* MyMesh::observerAppendVars(char* base, char* dp, const char* end) {
   bool first = (dp == base);                    // no leading ',' if we're first
   char kv[80];
 
+  // Live WiFi + MQTT state genuinely FIRST (these are what an operator checks,
+  // and on nodes with a long ssid+ip+host the frame fills before the tail);
+  // ':' in a value is echoed as ';' so it can't break the name:value,...
+  // framing (the stored value keeps the colon -- set splits on the first ':'
+  // only).
+  char wifi_state[40];
+  bool have_wifi = observerWifiStatus(wifi_state, sizeof(wifi_state));
+  char mq[48];   // "connecting t%d tls0x%x sock%d rc%d" must not truncate
+  bool have_mqtt = observerMqttStatus(mq, sizeof(mq));
+  if (have_wifi) {
+    snprintf(kv, sizeof(kv), "wifi:%s", wifi_state);
+    dp = appendVarKV(dp, end, &first, kv);
+  }
+  if (have_mqtt) {
+    snprintf(kv, sizeof(kv), "mqtt:%s", mq);
+    dp = appendVarKV(dp, end, &first, kv);
+  }
+
+  // Stored config next.
+  if (have_wifi) {
+    snprintf(kv, sizeof(kv), "wifi_ssid:%s", _prefs.wifi_ssid[0] ? _prefs.wifi_ssid : "off");
+    dp = appendVarKV(dp, end, &first, kv);
+  }
+  if (have_mqtt) {
+    char mh[sizeof(_prefs.mqtt_host)];
+    StrHelper::strzcpy(mh, _prefs.mqtt_host[0] ? _prefs.mqtt_host : "off", sizeof(mh));
+    for (char* c = mh; *c; c++) if (*c == ':') *c = ';';
+    snprintf(kv, sizeof(kv), "mqtt_host:%s", mh);
+    dp = appendVarKV(dp, end, &first, kv);
+    if (_prefs.mqtt_tls_insecure) {   // only surfaced when on -- it's the unsafe state
+      snprintf(kv, sizeof(kv), "mqtt_tls_insecure:1");
+      dp = appendVarKV(dp, end, &first, kv);
+    }
+  }
+
   snprintf(kv, sizeof(kv), "bot_enable:%d", _prefs.bot_enabled ? 1 : 0);
   dp = appendVarKV(dp, end, &first, kv);
 
@@ -797,29 +832,7 @@ char* MyMesh::observerAppendVars(char* base, char* dp, const char* end) {
   snprintf(kv, sizeof(kv), "advert_interval:%lu", (unsigned long)_observer->advert_interval_s);
   dp = appendVarKV(dp, end, &first, kv);
 
-  // WiFi + MQTT status first (these are what an operator checks live); ':' in
-  // a value is echoed as ';' so it can't break the name:value,... framing (the
-  // stored value keeps the colon -- set splits on the first ':' only).
-  char wifi_state[40];
-  if (observerWifiStatus(wifi_state, sizeof(wifi_state))) {
-    snprintf(kv, sizeof(kv), "wifi_ssid:%s", _prefs.wifi_ssid[0] ? _prefs.wifi_ssid : "off");
-    dp = appendVarKV(dp, end, &first, kv);
-    snprintf(kv, sizeof(kv), "wifi:%s", wifi_state);
-    dp = appendVarKV(dp, end, &first, kv);
-  }
-  char mq[24];
-  if (observerMqttStatus(mq, sizeof(mq))) {
-    char mh[sizeof(_prefs.mqtt_host)];
-    StrHelper::strzcpy(mh, _prefs.mqtt_host[0] ? _prefs.mqtt_host : "off", sizeof(mh));
-    for (char* c = mh; *c; c++) if (*c == ':') *c = ';';
-    snprintf(kv, sizeof(kv), "mqtt_host:%s", mh);
-    dp = appendVarKV(dp, end, &first, kv);
-    snprintf(kv, sizeof(kv), "mqtt:%s", mq);
-    dp = appendVarKV(dp, end, &first, kv);
-    if (_prefs.mqtt_tls_insecure) {   // only surfaced when on -- it's the unsafe state
-      snprintf(kv, sizeof(kv), "mqtt_tls_insecure:1");
-      dp = appendVarKV(dp, end, &first, kv);
-    }
+  if (have_mqtt) {
     char obs_echo[sizeof(_prefs.obs_url)];
     StrHelper::strzcpy(obs_echo, _prefs.obs_url[0] ? _prefs.obs_url : "off", sizeof(obs_echo));
     for (char* c = obs_echo; *c; c++) if (*c == ':') *c = ';';

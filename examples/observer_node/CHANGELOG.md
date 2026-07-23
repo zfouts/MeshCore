@@ -1,6 +1,12 @@
 # observer_node changelog
 
 ## Unreleased
+- Custom-vars reply: live `wifi:`/`mqtt:` status now packs FIRST (before the
+  stored config and bot vars). The reply frame is best-effort (176-byte cap)
+  and on a node with a long ssid+ip+host the `mqtt:` status var was evicted —
+  hiding the connect error codes exactly when they're needed. Status buffer
+  widened 24→48 so `connecting t<type> tls0x<err> sock<errno> rc<code>` is
+  never truncated.
 - Periodic zero-hop self-advert default lowered from every 15 min to every 6 h
   (`OBS_ADVERT_INTERVAL_S` 900 -> 21600). The 15-min cadence was tuned for the
   mobile/wardrive case; for stationary observers it was needless chatter.
