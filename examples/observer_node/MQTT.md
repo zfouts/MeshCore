@@ -121,7 +121,7 @@ meshcore/%u/#`: each user can only touch their own subtree. If no username is
 set (anonymous), it falls back to `meshcore/<node_name>`. Topic hygiene is
 applied to the free-form `<node_name>` segment (the characters `#`, `+`, `/`,
 and space become `-`); trailing `/` stripped. All examples below assume login
-`mesh` and node `LHTX-Observer`, i.e. `meshcore/mesh/LHTX-Observer`.
+`mesh` and node `Observer-1`, i.e. `meshcore/mesh/Observer-1`.
 
 ### 3.2 `<pk8>`
 
@@ -235,7 +235,7 @@ Event-driven, at receipt, not retained, QoS 0, enqueued (never blocks the
 radio path that just delivered the message).
 
 ```json
-{"from":"zmobi","text":"on my way","snr":-7.5,"hops_n":1,"hops":"dd",
+{"from":"alice","text":"on my way","snr":-7.5,"hops_n":1,"hops":"dd",
  "sender_ts":1784504030,"rx_ts":1784504032,"skew_s":2}
 ```
 ```json
