@@ -46,9 +46,9 @@ jobs:
           - wio_wm1110_repeater
           # SX1276 (ESP32)
           - Tbeam_SX1276_repeater
-          # this fork's own variants (fleet_node + observer_node): cover both toolchains
-          - Xiao_S3_WIO_fleet_node_usb
-          - Xiao_nrf52_fleet_node_ble
+          # this fork's own variants (repeater_companion + observer_node): cover both toolchains
+          - Xiao_S3_WIO_repeater_companion_usb
+          - Xiao_nrf52_repeater_companion_ble
           - heltec_v4_observer_node_wifi
           - Heltec_v3_observer_node_wifi
 

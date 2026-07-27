@@ -17,7 +17,7 @@ Commands:
   build-companion-firmwares: Build all companion firmwares for all build targets.
   build-repeater-firmwares: Build all repeater firmwares for all build targets.
   build-room-server-firmwares: Build all chat room server firmwares for all build targets.
-  build-fleet-observer-firmwares: Build all fleet_node + observer_node firmwares for all build targets.
+  build-fleet-observer-firmwares: Build all repeater_companion + observer_node firmwares for all build targets.
   build-observer-firmwares: Build all observer_node firmwares for all supported boards.
 
 Examples:
@@ -254,10 +254,11 @@ build_observer_firmwares() {
 
 build_fleet_observer_firmwares() {
 
-  # build this fork's own variants: fleet_node (mesh-only relay + control room)
-  # and observer_node (passive monitor + MQTT + advert dump).
-  build_all_firmwares_by_suffix "_fleet_node_usb"
-  build_all_firmwares_by_suffix "_fleet_node_ble"
+  # build this fork's own variants: repeater_companion (stock companion_radio
+  # with the repeat-mode frequency gate widened) and observer_node (passive
+  # monitor + MQTT + advert dump).
+  build_all_firmwares_by_suffix "_repeater_companion_usb"
+  build_all_firmwares_by_suffix "_repeater_companion_ble"
   build_all_firmwares_by_suffix "_observer_node_wifi"
 
 }
