@@ -5,6 +5,7 @@
 #endif
 #include <Mesh.h>
 #include "MyMesh.h"
+#include "ObserverJWT.h"
 
 // Believe it or not, this std C function is busted on some platforms!
 static uint32_t _atoi(const char* sp) {
@@ -570,6 +571,27 @@ void halt() {
              strchr(host, ':') ? "" : defport);
     snprintf(lwt, sizeof(lwt), "%s/status", mqtt_prefix);
     esp_mqtt_client_config_t cfg = {};
+    // Credential selection. `set mqtt.audience <host>` switches this slot to
+    // JWT auth: the node mints an Ed25519 token from its own mesh identity and
+    // connects as v1_<UPPERCASE_PUBKEY>, which is how the CoreScope/letsmesh
+    // family authenticate -- they have no account credential to configure. It
+    // takes precedence over mqtt.user/mqtt.pwd. Minting here means every
+    // (re)connect carries a fresh token, which doubles as the renewal path.
+    static char jwt_user[3 + (PUB_KEY_SIZE * 2) + 1];
+    static char jwt_token[OBS_JWT_MAX_LEN];
+    const char* auth_user = p->mqtt_user[0] ? p->mqtt_user : NULL;
+    const char* auth_pass = p->mqtt_pwd[0]  ? p->mqtt_pwd  : NULL;
+    if (p->mqtt_audience[0]) {
+      size_t jn = observerJwtCreate(the_mesh.self_id, p->mqtt_audience, 0,
+                                    jwt_token, sizeof(jwt_token));
+      if (jn > 0 && observerJwtUsername(the_mesh.self_id, jwt_user, sizeof(jwt_user))) {
+        auth_user = jwt_user;
+        auth_pass = jwt_token;
+      }
+      // jn == 0 means the clock is not SNTP-disciplined yet, so any token we
+      // minted would be rejected on its iat/exp. Leave the configured
+      // user/pwd in place and let the backoff ladder retry once time is set.
+    }
   #if ESP_IDF_VERSION_MAJOR >= 5
     cfg.broker.address.uri = uri;
     if (tls) {
@@ -580,8 +602,8 @@ void halt() {
       if (p->mqtt_tls_insecure) cfg.broker.verification.skip_cert_common_name_check = true;
       else                      cfg.broker.verification.certificate = OBS_MQTT_CA_PEM;
     }
-    if (p->mqtt_user[0]) cfg.credentials.username = p->mqtt_user;
-    if (p->mqtt_pwd[0])  cfg.credentials.authentication.password = p->mqtt_pwd;
+    if (auth_user) cfg.credentials.username = auth_user;
+    if (auth_pass) cfg.credentials.authentication.password = auth_pass;
     cfg.session.last_will.topic = lwt;
     cfg.session.last_will.msg = "offline";
     cfg.session.last_will.retain = true;
@@ -605,8 +627,8 @@ void halt() {
       if (p->mqtt_tls_insecure) cfg.skip_cert_common_name_check = true;
       else                      cfg.cert_pem = OBS_MQTT_CA_PEM;
     }
-    if (p->mqtt_user[0]) cfg.username = p->mqtt_user;
-    if (p->mqtt_pwd[0])  cfg.password = p->mqtt_pwd;
+    if (auth_user) cfg.username = auth_user;
+    if (auth_pass) cfg.password = auth_pass;
     cfg.lwt_topic = lwt;
     cfg.lwt_msg = "offline";
     cfg.lwt_retain = 1;

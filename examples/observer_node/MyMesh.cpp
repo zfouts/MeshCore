@@ -1026,6 +1026,13 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
 
   // defaults
   memset(&_prefs, 0, sizeof(_prefs));
+  // An observer is unattended and hears far more nodes than MAX_CONTACTS can
+  // hold, so ring the table: evict the oldest non-favourite instead of dropping
+  // every new contact once it is full. Without this bit a full table silently
+  // stops learning and the retained `contact/` roster freezes at whatever it
+  // happened to hold. `manual_add_contacts` stays 0 (auto-add every type), and
+  // both remain runtime-overridable over the companion surface.
+  _prefs.autoadd_config |= AUTO_ADD_OVERWRITE_OLDEST;
   _prefs.airtime_factor = 1.0;
   strcpy(_prefs.node_name, "NONAME");
   _prefs.freq = LORA_FREQ;
@@ -1080,6 +1087,23 @@ void MyMesh::begin(bool has_display) {
     }
     _store->saveMainIdentity(self_id);
   }
+
+// Optional build-time defaults so a freshly flashed fleet node comes up already
+// pointed at its own collector. These are deliberately NOT set in the committed
+// platformio.ini: a public build of this firmware must never dial somebody's
+// private broker. Pass them from a private build or a provisioning script, e.g.
+//   -D OBS_DEFAULT_MQTT_HOST='"wss://collector.example.org:443"'
+//   -D OBS_DEFAULT_MQTT_IATA='"AUS"'
+//   -D OBS_DEFAULT_MQTT_AUDIENCE='"collector.example.org"'
+#ifdef OBS_DEFAULT_MQTT_HOST
+  StrHelper::strzcpy(_prefs.mqtt_host, OBS_DEFAULT_MQTT_HOST, sizeof(_prefs.mqtt_host));
+#endif
+#ifdef OBS_DEFAULT_MQTT_IATA
+  StrHelper::strzcpy(_prefs.mqtt_iata, OBS_DEFAULT_MQTT_IATA, sizeof(_prefs.mqtt_iata));
+#endif
+#ifdef OBS_DEFAULT_MQTT_AUDIENCE
+  StrHelper::strzcpy(_prefs.mqtt_audience, OBS_DEFAULT_MQTT_AUDIENCE, sizeof(_prefs.mqtt_audience));
+#endif
 
 // if name is provided as a build flag, use that as default node name instead
 #ifdef ADVERT_NAME

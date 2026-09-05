@@ -46,17 +46,17 @@ make the contract safe and predictable, independent of firmware internals:
 | Parameter    | Value |
 |---|---|
 | Transport    | **`wss://` (recommended)** MQTT over TLS WebSockets; also `mqtts://` (native TLS), `ws://` (plain WebSockets) and `mqtt://` (plain TCP, **deprecated** — unencrypted, kept for lab/bench use only) |
-| Port         | From `mqtt_host` (`[scheme://]host[:port]`); explicit port always wins, defaults **443** wss / **8883** mqtts / **80** ws / **1883** mqtt. No URI path — the WebSocket handshake always requests `/` |
+| Port         | From `mqtt.host` (`[scheme://]host[:port]`); explicit port always wins, defaults **443** wss / **8883** mqtts / **80** ws / **1883** mqtt. No URI path — the WebSocket handshake always requests `/` |
 | TLS trust    | Broker cert verified against the Let's Encrypt production roots **pinned in firmware** (`MqttCaCerts.h`); other CAs rejected, no insecure-skip |
-| Auth         | Optional username/password (`mqtt_user` / `mqtt_pwd`; empty = anonymous) |
+| Auth         | Optional username/password (`mqtt.user` / `mqtt.pwd`; empty = anonymous) |
 | Keepalive    | **30 s** |
 | Clean session| Yes (esp_mqtt default) |
 | Reconnect    | Automatic, owned by the MQTT client task |
 
-Examples: `set mqtt_host wss://broker.example.org` (TLS WebSockets on 443,
+Examples: `set mqtt.host wss://broker.example.org` (TLS WebSockets on 443,
 the recommended transport — rides a standard HTTPS ingress / Cloudflare, TLS
 terminates at the proxy with an ordinary Let's Encrypt cert) or
-`set mqtt_host mqtts://broker.example.org:31883` (native TLS straight to the
+`set mqtt.host mqtts://broker.example.org:31883` (native TLS straight to the
 broker). The CA pin is deliberate — the device trusts LE-issued broker certs
 and nothing else; if the broker moves to another CA, refresh `MqttCaCerts.h`
 and reflash.
@@ -66,7 +66,7 @@ same esp-tls/mbedtls stack, so the TLS heap footprint and the fragmented-heap
 re-handshake fragility apply equally. The reconnect watchdog is the
 mitigation either way.
 
-**Insecure opt-out:** `set mqtt_tls_insecure on` disables server-cert
+**Insecure opt-out:** `set mqtt.tls_insecure on` disables server-cert
 verification entirely (encryption without authentication) — for brokers
 behind a private CA or reached by an IP/hostname the pinned roots can't
 vouch for. Off by default; per-node; echoed in the var dump only when on.
@@ -90,7 +90,7 @@ the node's liveness with no polling, including after ungraceful death.
 4. Publish first telemetry immediately (then on the periodic timer).
 
 **Runtime configuration** (companion CLI `set` vars, persisted in prefs):
-`mqtt_host` (empty = MQTT off), `mqtt_user`, `mqtt_pwd`, `mqtt_topic`.
+`mqtt.host` (empty = MQTT off), `mqtt.user`, `mqtt.pwd`, `mqtt.topic`.
 Changing any of them tears down and rebuilds the client.
 
 ---
@@ -114,9 +114,9 @@ Changing any of them tears down and rebuilds the client.
 
 ### 3.1 `<prefix>`
 
-`mqtt_topic` if set (used verbatim), else **`meshcore/<username>/<node_name>`**
+`mqtt.topic` if set (used verbatim), else **`meshcore/<username>/<node_name>`**
 — a per-user namespace for multi-user safety. `<username>` is the MQTT login
-(`mqtt_user`), so it lines up with a broker ACL of `topic readwrite
+(`mqtt.user`), so it lines up with a broker ACL of `topic readwrite
 meshcore/%u/#`: each user can only touch their own subtree. If no username is
 set (anonymous), it falls back to `meshcore/<node_name>`. Topic hygiene is
 applied to the free-form `<node_name>` segment (the characters `#`, `+`, `/`,
@@ -277,7 +277,7 @@ builds and later disable probing, clear these retained topics (§1 rule 6).
 
 ### 5.7 `<prefix>/advert` — advert dump (opt-in)
 
-Off by default; enable per node with `set advert_dump on`. Publishes one
+Off by default; enable per node with `set advert.dump on`. Publishes one
 message per **advert** the node hears (event stream, not retained), for
 diagnosing node clocks and inspecting adverts byte-for-byte.
 
@@ -452,7 +452,7 @@ see §6). Read-only dashboards can ignore this and the per-user fleet topic.
 | `contact/*` roster walk | 300 s | `OBS_MQTT_CONTACTS_INTERVAL_S` |
 | `heard/*` topology | 180 s | `OBS_MQTT_HEARD_INTERVAL_S` |
 | `msg/*` mirror | at receipt | — |
-| `advert` dump (opt-in) | per advert heard | `set advert_dump on\|off` |
+| `advert` dump (opt-in) | per advert heard | `set advert.dump on\|off` |
 | `repeater/*` (probe builds) | at probe response | probe tunables, see `ObserverProbe.h` |
 | Send-bridge budget | 6 msg/min, queue 4 | `MQTT_SEND_MAX_PER_MIN` |
 

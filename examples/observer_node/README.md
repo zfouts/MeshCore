@@ -8,7 +8,7 @@ not part of this tree, it does not forward packets, and in the default build it
 **never solicits anything from the mesh** — everything it publishes is heard,
 not asked for. Its only transmissions are its own periodic zero-hop advert
 (`OBS_ADVERT_INTERVAL_S`, 6 h default; override at runtime with
-`set advert_interval <s>`, persisted, 0 = off), protocol
+`set advert.interval <s>`, persisted, 0 = off), protocol
 ACKs to traffic addressed directly to it, and channel
 messages explicitly injected through the MQTT send bridge below.
 
@@ -23,7 +23,7 @@ messages explicitly injected through the MQTT send bridge below.
   SNR, ingress path, and clock fields: `sender_ts` (message's embedded
   timestamp), `rx_ts` (our NTP receive time), and `skew_s = rx_ts - sender_ts`,
   so a consumer can flag senders with a bad clock from ordinary chat.
-- **Advert dump** (opt-in, `set advert_dump on`) — publishes each heard advert
+- **Advert dump** (opt-in, `set advert.dump on`) — publishes each heard advert
   to `<prefix>/advert`: the advertiser's own clock (`adv_ts`), our NTP receive
   time (`rx_ts`), the computed `skew_s`, an 8-byte packet hash (groups relay
   copies), and the full packet as hex (`raw`). Built for auditing node clocks
@@ -54,13 +54,13 @@ messages explicitly injected through the MQTT send bridge below.
 Topics are namespaced per user for safety:
 
 ```
-<prefix> = meshcore/<mqtt_user>/<node_name>
+<prefix> = meshcore/<mqtt.user>/<node_name>
 ```
 
-The username segment is the MQTT login (`mqtt_user`), so it lines up with a
+The username segment is the MQTT login (`mqtt.user`), so it lines up with a
 mosquitto `topic readwrite meshcore/%u/#` ACL — each user is isolated to their
-own subtree. Anonymous (no `mqtt_user`) falls back to `meshcore/<node_name>`.
-`set mqtt_topic <string>` overrides the whole prefix verbatim. See MQTT.md §3.1.
+own subtree. Anonymous (no `mqtt.user`) falls back to `meshcore/<node_name>`.
+`set mqtt.topic <string>` overrides the whole prefix verbatim. See MQTT.md §3.1.
 
 ## Robustness
 
@@ -106,7 +106,7 @@ contract, byte-level advert decode, frontend guide, adoption checklist):
 **[MQTT.md](MQTT.md)**.
 
 ```
-<prefix> = meshcore/<mqtt_user>/<node_name>
+<prefix> = meshcore/<mqtt.user>/<node_name>
 
 <prefix>/status                    online/offline (retained, LWT)
 <prefix>/telemetry, /sensors       this node's own health / attached sensors
@@ -135,24 +135,56 @@ pio run -e Xiao_C6_observer_node_wifi
 Configure Wi-Fi, broker, and credentials at runtime over USB:
 
 ```
-set wifi_ssid <ssid>
-set wifi_pwd  <pwd>
-set mqtt_host <[scheme://]host[:port]>    # wss:// TLS WebSockets (443, recommended);
+set wifi.ssid <ssid>
+set wifi.pwd  <pwd>
+set mqtt.host <[scheme://]host[:port]>    # wss:// TLS WebSockets (443, recommended);
                                           # also mqtts:// (8883), ws:// (80),
                                           # mqtt:// plain TCP (1883, deprecated)
-set mqtt_user <user>                       # becomes the topic namespace segment
-set mqtt_pwd  <pwd>
-set advert_dump on                         # optional: clock-audit advert stream
-set advert_interval <s>                    # optional: self-advert cadence in seconds
+set mqtt.user <user>                       # becomes the topic namespace segment
+set mqtt.pwd  <pwd>
+set mqtt.audience <collector-host>         # optional: switch to JWT auth (see below)
+set mqtt.iata <AUS>                        # optional: 3-letter region code as the
+                                           # FIRST topic segment, for collectors
+                                           # that filter by region
+set advert.dump on                         # optional: clock-audit advert stream
+set advert.interval <s>                    # optional: self-advert cadence in seconds
                                            # (persisted; 0 = off, `-` = build default
                                            # of 6 h, max 86400)
 ```
+
+### Authenticating to a public collector (JWT)
+
+Collectors in the wider MeshCore ecosystem (CoreScope and the
+letsmesh/meshmapper family) do not issue credentials. A node proves possession
+of its **mesh identity key** instead: `set mqtt.audience <collector-host>`
+switches this node to JWT auth, and it will connect as
+`v1_<UPPERCASE_PUBKEY>` with an Ed25519-signed token as the password. The
+token carries `publicKey`, `aud`, `iat` and `exp`, is minted on the node
+(`ObserverJWT.h`), lasts 24 h, and is re-minted on every reconnect.
+
+```
+set mqtt.host wss://<collector-host>:443
+set mqtt.audience <collector-host>
+set mqtt.iata <AUS>
+```
+
+Notes:
+- Setting an audience takes precedence over `mqtt.user` / `mqtt.pwd`; `-`
+  clears it and returns to username/password.
+- The node's clock must be SNTP-disciplined or the token is refused before it
+  is sent (a token dated from the RTC seed would be rejected by the collector
+  anyway). This happens automatically on WiFi connect.
+- This authenticates identity, it does not authorise: the token is
+  self-issued, so a collector accepting it is running open enrollment. It
+  proves a publisher cannot impersonate *another* node, nothing more. For a
+  broker you control, ordinary username/password with a server-side allowlist
+  is the stronger option.
 
 `wss://` (MQTT over TLS WebSockets) is the recommended transport: it rides a
 standard HTTPS ingress on 443, so the broker needs no cert of its own — TLS
 terminates at the proxy with an ordinary Let's Encrypt cert. Both `wss://`
 and `mqtts://` verify the server against the LE roots pinned in
-`MqttCaCerts.h`; `set mqtt_tls_insecure on` skips verification (encryption
+`MqttCaCerts.h`; `set mqtt.tls_insecure on` skips verification (encryption
 without authentication — trusted networks only). Plain `mqtt://` is
 deprecated — unencrypted, lab/bench use only. See MQTT.md §2.
 

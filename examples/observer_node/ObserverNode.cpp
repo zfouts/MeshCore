@@ -519,7 +519,21 @@ extern "C" __attribute__((weak)) void observerMqttAdvert(const uint8_t*, const u
 
 // `set bot_enable 0|1`, `set bot_channel <idx|off|name|#tag|name,b64psk>`,
 // `set bot_control_channel <same syntax>`. Returns true if handled.
-bool MyMesh::observerSetVar(const char* name, const char* value) {
+// Settings are named `family.key` (mqtt.host, wifi.ssid, bot.enable, ...) to
+// line up with the wider MeshCore observer ecosystem, which namespaces with a
+// dot. The historic underscore spellings (mqtt_host, ...) stay accepted so
+// existing provisioning scripts and notes keep working -- both collapse to the
+// same canonical name here, and the dotted form is what we emit.
+static void canonVarName(const char* in, char* out, size_t outsz) {
+  size_t i = 0;
+  for (; in[i] && i + 1 < outsz; i++) out[i] = (in[i] == '.') ? '_' : in[i];
+  out[i] = 0;
+}
+
+bool MyMesh::observerSetVar(const char* raw_name, const char* value) {
+  char canon_name[40];
+  canonVarName(raw_name, canon_name, sizeof(canon_name));
+  const char* name = canon_name;
   if (!_observer) return false;
 
   if (strcmp(name, "bot_enable") == 0) {
@@ -554,6 +568,19 @@ bool MyMesh::observerSetVar(const char* name, const char* value) {
     }
     savePrefs();
     observerApplyMqtt();   // prefix changes -> rebuild so subscriptions follow it
+    return true;
+  }
+  if (strcmp(name, "mqtt_audience") == 0) {
+    // Setting an audience SWITCHES THIS NODE TO JWT AUTH: it mints an
+    // Ed25519 token from its own mesh identity and connects as
+    // v1_<UPPERCASE_PUBKEY>, ignoring mqtt.user/mqtt.pwd. `-` clears it and
+    // returns to username/password. Value is the collector's hostname, which
+    // is what goes in the `aud` claim.
+    const char* v = (strcmp(value, "-") == 0) ? "" : value;
+    if (strlen(v) >= sizeof(_prefs.mqtt_audience)) return false;
+    StrHelper::strzcpy(_prefs.mqtt_audience, v, sizeof(_prefs.mqtt_audience));
+    savePrefs();
+    observerApplyMqtt();   // credentials changed -> rebuild the client
     return true;
   }
   if (strcmp(name, "mqtt_packets") == 0) {
@@ -834,52 +861,56 @@ char* MyMesh::observerAppendVars(char* base, char* dp, const char* end) {
 
   // Stored config next.
   if (have_wifi) {
-    snprintf(kv, sizeof(kv), "wifi_ssid:%s", _prefs.wifi_ssid[0] ? _prefs.wifi_ssid : "off");
+    snprintf(kv, sizeof(kv), "wifi.ssid:%s", _prefs.wifi_ssid[0] ? _prefs.wifi_ssid : "off");
     dp = appendVarKV(dp, end, &first, kv);
   }
   if (have_mqtt) {
     char mh[sizeof(_prefs.mqtt_host)];
     StrHelper::strzcpy(mh, _prefs.mqtt_host[0] ? _prefs.mqtt_host : "off", sizeof(mh));
     for (char* c = mh; *c; c++) if (*c == ':') *c = ';';
-    snprintf(kv, sizeof(kv), "mqtt_host:%s", mh);
+    snprintf(kv, sizeof(kv), "mqtt.host:%s", mh);
     dp = appendVarKV(dp, end, &first, kv);
     if (_prefs.mqtt_iata[0]) {        // only surfaced when set -- "" = legacy user layout
-      snprintf(kv, sizeof(kv), "mqtt_iata:%s", _prefs.mqtt_iata);
+      snprintf(kv, sizeof(kv), "mqtt.iata:%s", _prefs.mqtt_iata);
+      dp = appendVarKV(dp, end, &first, kv);
+    }
+    if (_prefs.mqtt_audience[0]) {   // only surfaced when set -- implies JWT auth
+      snprintf(kv, sizeof(kv), "mqtt.audience:%s", _prefs.mqtt_audience);
       dp = appendVarKV(dp, end, &first, kv);
     }
     if (_prefs.mqtt_packets) {        // only surfaced when on -- it's the high-volume state
-      snprintf(kv, sizeof(kv), "mqtt_packets:1");
+      snprintf(kv, sizeof(kv), "mqtt.packets:1");
       dp = appendVarKV(dp, end, &first, kv);
     }
     if (_prefs.mqtt_tls_insecure) {   // only surfaced when on -- it's the unsafe state
-      snprintf(kv, sizeof(kv), "mqtt_tls_insecure:1");
+      snprintf(kv, sizeof(kv), "mqtt.tls_insecure:1");
       dp = appendVarKV(dp, end, &first, kv);
     }
   }
 
-  snprintf(kv, sizeof(kv), "bot_enable:%d", _prefs.bot_enabled ? 1 : 0);
+  snprintf(kv, sizeof(kv), "bot.enable:%d", _prefs.bot_enabled ? 1 : 0);
   dp = appendVarKV(dp, end, &first, kv);
 
-  int m = observerFormatChannelMask(kv, 0, sizeof(kv), "bot_channel", _prefs.bot_channel_mask);
+  int m = observerFormatChannelMask(kv, 0, sizeof(kv), "bot.channel", _prefs.bot_channel_mask);
   if (m > 0) dp = appendVarKV(dp, end, &first, kv);
 
-  m = observerFormatChannelVar(kv, 0, sizeof(kv), "bot_control_channel", _prefs.bot_control_channel);
+  m = observerFormatChannelVar(kv, 0, sizeof(kv), "bot.control_channel", _prefs.bot_control_channel);
   if (m > 0) dp = appendVarKV(dp, end, &first, kv);
 
   // Effective cadence (build default until `set advert_interval` overrides it).
-  snprintf(kv, sizeof(kv), "advert_interval:%lu", (unsigned long)_observer->advert_interval_s);
+  snprintf(kv, sizeof(kv), "advert.interval:%lu", (unsigned long)_observer->advert_interval_s);
   dp = appendVarKV(dp, end, &first, kv);
 
   if (have_mqtt) {
     char obs_echo[sizeof(_prefs.obs_url)];
     StrHelper::strzcpy(obs_echo, _prefs.obs_url[0] ? _prefs.obs_url : "off", sizeof(obs_echo));
     for (char* c = obs_echo; *c; c++) if (*c == ':') *c = ';';
-    snprintf(kv, sizeof(kv), "obs_url:%s", obs_echo);
+    snprintf(kv, sizeof(kv), "obs.url:%s", obs_echo);
     dp = appendVarKV(dp, end, &first, kv);
   }
 
   // Lowest priority (rarely queried live): the path-only channel set.
-  m = observerFormatChannelMask(kv, 0, sizeof(kv), "bot_path_channel", _prefs.bot_path_mask);
+  m = observerFormatChannelMask(kv, 0, sizeof(kv), "bot.path_channel", _prefs.bot_path_mask);
   if (m > 0) dp = appendVarKV(dp, end, &first, kv);
 
   return dp;

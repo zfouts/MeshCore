@@ -299,7 +299,7 @@ private:
   int observerResolveChannelArg(const char* value);  // channel idx, 0xFF=off, -1=fail
   int observerFormatChannelVar(char* buf, int n, size_t bufsz, const char* name, uint8_t ch);
   int observerFormatChannelMask(char* buf, int n, size_t bufsz, const char* name, uint64_t mask);
-  bool observerSetVar(const char* name, const char* value);
+  bool observerSetVar(const char* raw_name, const char* value);
   char* observerAppendVars(char* base, char* dp, const char* end);
   void handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t timestamp, const char* text);
   void handleTargetedSet(const mesh::GroupChannel& channel, const char* sender, const char* text);

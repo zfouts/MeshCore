@@ -1,6 +1,44 @@
 # observer_node changelog
 
 ## Unreleased
+- `set mqtt.audience <host>` — Ed25519-signed JWT authentication, so a node can
+  publish to the public MeshCore collectors (CoreScope, letsmesh, meshmapper,
+  cascadiamesh, ...) which issue no credentials. The node mints the token from
+  its own mesh identity in `ObserverJWT.{h,cpp}` (header `{"alg":"EdDSA"}`,
+  payload `publicKey`/`aud`/`iat`/`exp`, signed over `header.payload` via
+  `LocalIdentity::sign()` — the keypair is never exported) and connects as
+  `v1_<UPPERCASE_PUBKEY>`. Wire-compatible with agessaman/MeshCore's JWTHelper.
+  24 h lifetime, re-minted on every (re)connect, which is the renewal path.
+  Takes precedence over `mqtt.user`/`mqtt.pwd`; `-` clears it. Minting is
+  refused if the clock reads pre-2020, since an un-SNTP'd node would emit a
+  token every collector rejects — the ladder simply retries once time is set.
+  NOTE this authenticates identity but authorises nothing: the token is
+  self-issued, so accepting it means open enrollment. It stops a publisher
+  impersonating another node and gives a stable bannable identity; it is
+  strictly weaker than a server-side allowlist, so brokers you control should
+  stay on username/password.
+- Optional build-time defaults `OBS_DEFAULT_MQTT_HOST`, `OBS_DEFAULT_MQTT_IATA`
+  and `OBS_DEFAULT_MQTT_AUDIENCE` seed a fresh node's collector settings.
+  Deliberately NOT set in the committed platformio.ini: a public build of this
+  firmware must never dial somebody's private broker. Supply them from a
+  private build or a provisioning script.
+- Settings are now namespaced with a dot -- `mqtt.host`, `mqtt.user`, `mqtt.pwd`,
+  `mqtt.topic`, `mqtt.iata`, `mqtt.packets`, `mqtt.tls_insecure`, `wifi.ssid`,
+  `wifi.pwd`, `bot.enable`, `bot.channel`, `bot.control_channel`,
+  `bot.path_channel`, `obs.url`, `obs.token`, `advert.dump`, `advert.interval`
+  -- matching how the wider MeshCore observer ecosystem namespaces its config.
+  The old underscore spellings are STILL ACCEPTED on `set`: names are
+  canonicalised (`.` -> `_`) at the entry point, so existing provisioning
+  scripts keep working. The dotted form is what the node emits in the
+  custom-vars reply, so `get` and `get custom` report dotted names.
+  Prefs are stored positionally in the prefs file, so nothing is migrated and
+  no stored configuration is affected.
+- Default `autoadd_config` to `AUTO_ADD_OVERWRITE_OLDEST`. It was
+  zero-initialised, so a full contact table silently stopped learning and the
+  retained `contact/` roster froze at whatever it held. Observers are
+  unattended and hear far more nodes than MAX_CONTACTS, so the table now rings,
+  evicting the oldest non-favourite. `manual_add_contacts` stays 0 (auto-add
+  every advert type). Applies to fresh prefs only; both stay runtime-settable.
 - **Fix: TLS/wss sessions dropped every ~36 s. The mesh was starving mbedTLS of
   internal DRAM.** `the_mesh` carries `contacts[MAX_CONTACTS+MAX_ANON_CONTACTS]`
   inline -- 119,520 bytes of `.bss` at MAX_CONTACTS=350, the largest object on
