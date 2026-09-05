@@ -247,6 +247,17 @@ build_room_server_firmwares() {
 
 }
 
+build_kiss_modem_firmwares() {
+
+#  # build specific kiss radio firmwares
+#  build_firmware "Heltec_v3_kiss_modem"
+#  build_firmware "RAK_4631_kiss_modem"
+
+  # build all room server firmwares
+  build_all_firmwares_by_suffix "_kiss_modem"
+
+}
+
 build_observer_firmwares() {
 
   # build all observer_node firmwares (passive monitor + MQTT + advert dump)
@@ -263,17 +274,6 @@ build_fleet_observer_firmwares() {
   build_all_firmwares_by_suffix "_repeater_companion_usb"
   build_all_firmwares_by_suffix "_repeater_companion_ble"
   build_all_firmwares_by_suffix "_observer_node_wifi"
-
-}
-
-build_kiss_modem_firmwares() {
-
-#  # build specific kiss radio firmwares
-#  build_firmware "Heltec_v3_kiss_modem"
-#  build_firmware "RAK_4631_kiss_modem"
-
-  # build all room server firmwares
-  build_all_firmwares_by_suffix "_kiss_modem"
 
 }
 
