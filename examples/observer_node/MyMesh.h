@@ -366,4 +366,10 @@ private:
   int8_t cur_advert_snr_x4 = 0;
 };
 
-extern MyMesh the_mesh;
+// the_mesh is built on FIRST USE, not at static-init time: PSRAM is not yet
+// registered with the heap allocator while C++ static constructors run, so a
+// static-init allocation silently falls back to internal DRAM -- which is the
+// one pool mbedTLS can use. Deferring it to first use (inside setup()) puts
+// the ~117 KB mesh in PSRAM and leaves internal DRAM for TLS.
+MyMesh& theMeshInstance();
+#define the_mesh theMeshInstance()

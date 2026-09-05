@@ -1,4 +1,8 @@
 #include <Arduino.h>   // needed for PlatformIO
+#include <new>         // placement new: the mesh is built in PSRAM (see the_mesh)
+#if defined(ESP32)
+  #include <esp_heap_caps.h>
+#endif
 #include <Mesh.h>
 #include "MyMesh.h"
 
@@ -116,11 +120,34 @@ static uint32_t _atoi(const char* sp) {
 
 StdRNG fast_rng;
 SimpleMeshTables tables;
-MyMesh the_mesh(radio_driver, fast_rng, rtc_clock, tables, store
-   #ifdef DISPLAY_CLASS
-      , &ui_task
-   #endif
-);
+// the_mesh carries contacts[MAX_CONTACTS+MAX_ANON_CONTACTS] inline, which is
+// ~117 KB of .bss at MAX_CONTACTS=350 -- by far the largest object on the node.
+// It used to live in internal DRAM, and that is what starved TLS: the Arduino
+// esp32 libs build mbedTLS with CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y, so its
+// record buffers (CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=16384, in AND out, with
+// asymmetric content length off) can ONLY come from internal DRAM. With the
+// mesh parked there, ~57 KB was left for a handshake that wants ~32 KB of
+// buffers plus its working set, so sessions died and re-handshakes failed with
+// tls0x801a/0x8017. This board has 2 MB of PSRAM that mbedTLS is structurally
+// unable to use, so the mesh is constructed there and internal DRAM is left to
+// TLS. Falls back to internal DRAM if PSRAM is absent or not yet up, which is
+// exactly the old behaviour -- no regression on a board without PSRAM.
+MyMesh& theMeshInstance() {
+  static MyMesh* inst = nullptr;
+  if (inst == nullptr) {
+    void* mem = nullptr;
+  #if defined(ESP32)
+    mem = heap_caps_malloc(sizeof(MyMesh), MALLOC_CAP_SPIRAM);
+  #endif
+    if (mem == nullptr) mem = malloc(sizeof(MyMesh));
+    inst = new (mem) MyMesh(radio_driver, fast_rng, rtc_clock, tables, store
+       #ifdef DISPLAY_CLASS
+          , &ui_task
+       #endif
+    );
+  }
+  return *inst;
+}
 
 /* END GLOBAL OBJECTS */
 
@@ -720,19 +747,44 @@ void halt() {
   #ifndef OBS_MQTT_CONTACTS_INTERVAL_S
   #define OBS_MQTT_CONTACTS_INTERVAL_S 300
   #endif
+  // The roster goes out a few entries at a time, not as one sweep. A busy
+  // observer holds 300+ contacts, and enqueueing them back-to-back hands the
+  // esp_mqtt outbox ~100 KB of copies in a single pass -- far more than the
+  // ~57 KB of heap left once wss/TLS is up, since mbedtls holds ~50 KB. The
+  // outbox could not drain over TLS in time, the write path timed out
+  // (errno 119) and the broker saw the session close, almost exactly one
+  // OBS_MQTT_CONTACTS_INTERVAL_S apart. Slicing keeps the retained roster
+  // complete while flattening that peak.
+  #ifndef OBS_MQTT_CONTACTS_BATCH
+  #define OBS_MQTT_CONTACTS_BATCH 8
+  #endif
+  #ifndef OBS_MQTT_CONTACTS_SLICE_MS
+  #define OBS_MQTT_CONTACTS_SLICE_MS 250
+  #endif
   static unsigned long next_mqtt_contacts = 0;
+  static uint32_t mqtt_contacts_cursor = 0;
 
-  // Walk the whole contact table and publish each known node RETAINED under
-  // <prefix>/contact/<8-hex pubkey prefix>: name, type, coordinates (when the
-  // node adverts a position), and when we last heard its advert. Retained so
-  // the broker always holds the current roster/map even across broker or node
-  // restarts, and re-published on a slow timer so positions track movement.
-  static void mqttPublishContacts() {
+  // Publish each known node RETAINED under <prefix>/contact/<8-hex pubkey
+  // prefix>: name, type, coordinates (when the node adverts a position), and
+  // when we last heard its advert. Retained so the broker always holds the
+  // current roster/map even across broker or node restarts, and re-published on
+  // a slow timer so positions track movement.
+  //
+  // Publishes at most OBS_MQTT_CONTACTS_BATCH entries per call, resuming from a
+  // cursor, and returns true when that cursor wraps -- i.e. a full sweep just
+  // finished. An eviction can reorder the table mid-sweep (autoadd overwrites
+  // the oldest slot), so a sweep may occasionally skip or repeat an entry;
+  // these are retained refreshes of slow-moving state and the next sweep
+  // corrects it.
+  static bool mqttPublishContactsSlice() {
     static const char* TYPE_STR[] = {"none", "chat", "repeater", "room", "sensor"};
     int nc = the_mesh.getNumContacts();
-    for (int i = 0; i < nc; i++) {
+    if (nc <= 0) { mqtt_contacts_cursor = 0; return true; }
+    int sent = 0;
+    while (sent < OBS_MQTT_CONTACTS_BATCH && mqtt_contacts_cursor < (uint32_t)nc) {
       ContactInfo c;
-      if (!the_mesh.getContactByIdx((uint32_t)i, c)) continue;
+      uint32_t idx = mqtt_contacts_cursor++;
+      if (!the_mesh.getContactByIdx(idx, c)) continue;
       if (c.name[0] == 0 && c.last_advert_timestamp == 0) continue;  // empty slot
       char pk[9];
       for (int b = 0; b < 4; b++) snprintf(pk + b * 2, 3, "%02x", c.id.pub_key[b]);
@@ -747,9 +799,13 @@ void halt() {
         n += snprintf(payload + n, sizeof(payload) - n, ",\"lat\":%.6f,\"lon\":%.6f",
                       c.gps_lat / 1e6, c.gps_lon / 1e6);
       n += snprintf(payload + n, sizeof(payload) - n, "}");
-      if (n > 0 && n < (int)sizeof(payload))
+      if (n > 0 && n < (int)sizeof(payload)) {
         esp_mqtt_client_enqueue(mqtt_client, topic, payload, n, 0, true, true);
+        sent++;   // only a real enqueue counts against the batch
+      }
     }
+    if (mqtt_contacts_cursor >= (uint32_t)nc) { mqtt_contacts_cursor = 0; return true; }
+    return false;
   }
 
   // Advert ingress paths: for each node whose advert we've heard, publish the
@@ -816,6 +872,25 @@ void halt() {
 
   static void mqttLoop() {
     if (!mqtt_client) return;
+  #if defined(ESP32)
+    // Diagnostic: mbedTLS is built INTERNAL_MEM_ALLOC, so only the INTERNAL
+    // figures matter to a handshake -- and it needs a large CONTIGUOUS block,
+    // which is why the largest-free-block number is logged next to the total.
+    // `mesh=` shows where the_mesh actually landed: >=0x3C000000 is PSRAM,
+    // 0x3FCxxxxx means the PSRAM allocation fell back to internal DRAM.
+    {
+      static unsigned long next_heap_log = 0;
+      if (next_heap_log == 0 || (long)(millis() - next_heap_log) >= 0) {
+        next_heap_log = millis() + 10000UL;
+        Serial.printf("MQTT: conn=%d int_free=%u int_largest=%u psram_free=%u mesh=%p\n",
+                      mqtt_connected ? 1 : 0,
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                      (void*)&the_mesh);
+      }
+    }
+  #endif
     if (!mqtt_connected) {
       // Reconnect driver (auto-reconnect is off; see the ladder notes above).
       // This MUST also cover the never-yet-connected case: with esp_mqtt's own
@@ -887,8 +962,12 @@ void halt() {
       }
     }
     if (next_mqtt_contacts == 0 || (long)(millis() - next_mqtt_contacts) >= 0) {
-      next_mqtt_contacts = millis() + OBS_MQTT_CONTACTS_INTERVAL_S * 1000UL;
-      mqttPublishContacts();
+      // Step through the roster a batch at a time; wait out the full interval
+      // only once a sweep completes, so the whole table is still refreshed
+      // every OBS_MQTT_CONTACTS_INTERVAL_S as before -- just spread out.
+      next_mqtt_contacts = millis() + (mqttPublishContactsSlice()
+                                         ? OBS_MQTT_CONTACTS_INTERVAL_S * 1000UL
+                                         : OBS_MQTT_CONTACTS_SLICE_MS);
     }
     if (next_mqtt_heard == 0 || (long)(millis() - next_mqtt_heard) >= 0) {
       next_mqtt_heard = millis() + OBS_MQTT_HEARD_INTERVAL_S * 1000UL;

@@ -1,44 +1,48 @@
 # observer_node changelog
 
 ## Unreleased
-- Fix: `FIRMWARE_VERSION` was still `v1.16.0-observer`. The upstream v1.17.1 merge
-  bumped `companion_radio/MyMesh.h`, `simple_repeater/MyMesh.h` and
-  `simple_room_server/MyMesh.h`, but `examples/observer_node/` is fork-only so
-  upstream never touched it — every observer has been reporting 1.16.0 over the
-  mesh and to MQTT subscribers since the merge. Now `v1.17.1-observer`.
-- **MQTT reconnect rewritten; the node no longer reboots itself.** Ported from
-  agessaman/MeshCore `observer-firmware` (`MQTTConnectionPolicy.h`,
-  `MQTTBridge::optimizeMqttClientConfig`). esp_mqtt's auto-reconnect is now
-  DISABLED and `mqttLoop()` drives reconnection:
-  - Backoff ladder 10/30/60/120/300 s, replacing esp_mqtt's flat 10 s retry.
-    Every retry is a fresh TLS handshake needing ~40 KB of internal DRAM, so the
-    old cadence thrashed the heap and made re-handshake failures
-    (`tls0x8017`/`0x801a`) self-perpetuating.
-  - The ladder resets only after the link HOLDS for 2 min, not on CONNACK. This
-    is what breaks the flap -> reset -> flap cycle.
-  - Circuit breaker after 3 failures at the top rung (~15 min): routine retries
-    stop, a full client re-init probes once every 30 min, and any `set mqtt_*`
-    clears it.
-  - `ESP.restart()` and `OBS_MQTT_REBOOT_S` are GONE. Rebooting after 300 s down
-    meant a broker/ingress outage rebooted the observer every 5 minutes — the
-    node lost mesh state and re-adverted each cycle, and a server-side fault
-    presented as firmware TLS flapping.
-- MQTT client config: these were all left at IDF defaults and are now set —
-  `keepalive` 30 -> 75 s (45 s on PSRAM boards; ingresses such as Cloudflare
-  close an idle WebSocket at ~100 s, and 30 s gave 2.5x more chances for one
-  late PINGRESP to force a full re-handshake), `task.stack_size` 6144 -> 8192
-  (WSS layers the WebSocket transport on top of esp-tls), `message_retransmit_timeout`
-  1000 -> 15000 ms (the 1 s default resends a byte-identical QoS-1 PUBLISH every
-  second whenever a PUBACK is slow), and `buffer.size`/`out_size` pinned to 1024
-  rather than letting `out_size` silently track `size`.
-- Fix: three MQTT sends used the blocking `esp_mqtt_client_publish()` instead of
-  `esp_mqtt_client_enqueue()`. Two were in `mqttLoop()` (main task), so a
-  stalled uplink could block the MESH LOOP for up to `network.timeout_ms`
-  (10 s) — contradicting the file's own "nothing here can stall the mesh loop"
-  note. The third was a QoS-1 publish inside the `MQTT_EVENT_CONNECTED` handler,
-  which stalls esp_mqtt's event loop and its keepalive PINGs.
-- `get mqtt` now reports the backoff rung (`connecting r3 t2 tls0x8017 …`) and
-  `breaker` when the circuit breaker is tripped.
+- **Fix: TLS/wss sessions dropped every ~36 s. The mesh was starving mbedTLS of
+  internal DRAM.** `the_mesh` carries `contacts[MAX_CONTACTS+MAX_ANON_CONTACTS]`
+  inline -- 119,520 bytes of `.bss` at MAX_CONTACTS=350, the largest object on
+  the node. The Arduino esp32 libs build mbedTLS with
+  `CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y` and
+  `CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=16384` (in AND out, asymmetric content
+  length off), so TLS needs ~32 KB of buffers that can come from internal DRAM
+  and NOWHERE else -- it can never use the board's 2 MB of PSRAM. Measured on
+  the node: free internal heap collapsed to **888 bytes, largest block 532**,
+  while ~2 MB of PSRAM sat idle; the write path then timed out
+  (`Writing didn't complete in specified timeout: errno=119`,
+  `Error to resend data`) and the client closed the session, and re-handshakes
+  failed with `tls0x8017` (SSL setup alloc failure) / `-0x2700`. `the_mesh` is
+  now constructed in PSRAM. After: **195,836 free / 180,212 largest**, and a
+  wss session held >10 min across two roster sweeps where it previously died
+  every ~36 s.
+  - The allocation is deliberately made on FIRST USE, not at static-init time:
+    PSRAM is not yet registered with the heap allocator while C++ static
+    constructors run, so a static-init `heap_caps_malloc(MALLOC_CAP_SPIRAM)`
+    silently returns NULL and falls back to internal DRAM -- which looks like
+    the fix is applied while changing nothing. Verify with the `mesh=` pointer
+    in the heap log: `0x3d……`/`0x3c……` is PSRAM, `0x3f……` is internal.
+  - `the_mesh` is therefore now `#define the_mesh theMeshInstance()`
+    (MyMesh.h) rather than a global object; call sites are unchanged.
+- Heap diagnostic in `mqttLoop()`: every 10 s, logs
+  `MQTT: conn=… int_free=… int_largest=… psram_free=… mesh=…` to serial. Only
+  the INTERNAL figures matter to a handshake, and it needs a large CONTIGUOUS
+  block, so the largest-free-block is logged next to the total. This is what
+  identified the fault above after two wrong theories; the `mesh=` pointer is
+  the one-glance check that the PSRAM allocation actually took.
+- Contact-roster republish is now paced: `mqttPublishContacts()` walked the
+  whole table and enqueued every contact back-to-back (~100 KB of outbox copies
+  in one pass at 324 contacts). It now publishes `OBS_MQTT_CONTACTS_BATCH` (8)
+  entries per pass every `OBS_MQTT_CONTACTS_SLICE_MS` (250 ms) from a resumable
+  cursor, completing a full sweep in ~10 s and waiting out the rest of
+  `OBS_MQTT_CONTACTS_INTERVAL_S` only once the cursor wraps. Same retained
+  roster, same refresh cadence, ~2.6 KB peak instead of ~100 KB.
+  NOTE: this was first committed as the fix for the session drops -- it was
+  not. Sessions died at ~36 s, far short of the 300 s interval, and pacing
+  alone changed nothing; the DRAM fault above was the cause. It is kept
+  because bursting 324 enqueues at a heap this size is wrong regardless.
+  `mqttPublishHeard()` was already capped at 16 entries.
 - Custom-vars reply: live `wifi:`/`mqtt:` status now packs FIRST (before the
   stored config and bot vars). The reply frame is best-effort (176-byte cap)
   and on a node with a long ssid+ip+host the `mqtt:` status var was evicted —
