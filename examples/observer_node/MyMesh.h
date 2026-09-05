@@ -79,15 +79,6 @@
 #define REQ_TYPE_KEEP_ALIVE             0x02
 #define REQ_TYPE_GET_TELEMETRY_DATA     0x03
 
-#ifdef WITH_BOT_COMMANDS
-// observer_node extension (examples/observer_node). Inert in all other envs.
-#ifndef BOT_CMD_PREFIX
-#define BOT_CMD_PREFIX '!'   // channel messages starting with this are bot commands (DMs ignored)
-#endif
-#ifndef RELAY_DEFAULT_ON
-#define RELAY_DEFAULT_ON 1   // enable relay (client_repeat) by default on first boot
-#endif
-#endif
 
 #ifdef WITH_RELAY_POLICY
 // observer_node repeater-grade forward policy (examples/observer_node/RelayPolicy.cpp).
@@ -250,13 +241,6 @@ private:
   void checkSerialInterface();
   bool isValidClientRepeatFreq(uint32_t f) const;
 
-#ifdef WITH_BOT_COMMANDS
-  // Extension point implemented in examples/observer_node/BotCommands.cpp.
-  // Inert unless WITH_BOT_COMMANDS is defined (observer_node build envs only).
-  // Channel-only: bot commands in DMs are ignored (no DM handler at all).
-  bool buildBotReply(const char* cmd, mesh::Packet* pkt, uint32_t sender_timestamp, const char* sender_name, bool is_ctl, char* reply, size_t sz);
-  uint32_t _relay_count = 0; // packets relayed since boot (for bot telemetry)
-#endif
 #ifdef WITH_RELAY_POLICY
   // Implemented in examples/observer_node/RelayPolicy.cpp. Repeater-grade
   // forward filter (hop limits + loop detection); inert in other envs.
@@ -301,7 +285,6 @@ private:
   int observerFormatChannelMask(char* buf, int n, size_t bufsz, const char* name, uint64_t mask);
   bool observerSetVar(const char* raw_name, const char* value);
   char* observerAppendVars(char* base, char* dp, const char* end);
-  void handleBotChannel(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t timestamp, const char* text);
   void handleTargetedSet(const mesh::GroupChannel& channel, const char* sender, const char* text);
 #endif
 

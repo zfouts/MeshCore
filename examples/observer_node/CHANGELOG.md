@@ -1,6 +1,29 @@
 # observer_node changelog
 
 ## Unreleased
+- Removed the dead bot-command and `!path` map-link surface. `handleBotChannel()`
+  and `buildBotReply()` were declared and called but NEVER DEFINED -- the
+  implementation went away when observer_node was decoupled from combined_node,
+  and `WITH_BOT_COMMANDS` is defined by no env, so none of it was compiled.
+  `observerPathShortUrl()` (a blocking ~5 s HTTPS POST to the mesh-observer
+  device API) had zero call sites for the same reason: its only caller was the
+  bot's `!path` handler. Gone with it: `set bot.enable`, `set bot.path_channel`,
+  `set obs.url`, `set obs.token`, their custom-vars entries, the
+  `HTTPClient`/`WiFiClientSecure` includes and the `jsonSanitize()` helper.
+  Frees 10,792 bytes of flash and shortens the 176-byte custom-vars frame,
+  which had been evicting live status on nodes with a long ssid+host.
+  KEPT, because they drive live features and are NOT bot-only:
+    * `bot.channel` -- the low-battery "going dark" beacon transmits on it
+      (`observerLowBattBeacon`).
+    * `bot.control_channel` -- the wardrive beacon asks the fleet for path
+      replies on it.
+  Their `bot.` prefix is now a misnomer; left alone for the moment rather than
+  breaking provisioning again so soon after the dotted rename.
+- `bot_enabled`, `bot_path_mask`, `obs_url` and `obs_token` remain in NodePrefs
+  and in the DataStore read/write sequence, marked RESERVED. They are dead
+  fields but prefs are stored POSITIONALLY: bot_*/obs_* occupy bytes 137-388,
+  immediately before mqtt_host at 389, so deleting them would shift every MQTT
+  field and corrupt the stored configuration of every deployed node.
 - `set mqtt.audience <host>` — Ed25519-signed JWT authentication, so a node can
   publish to the public MeshCore collectors (CoreScope, letsmesh, meshmapper,
   cascadiamesh, ...) which issue no credentials. The node mints the token from

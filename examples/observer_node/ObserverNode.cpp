@@ -484,24 +484,12 @@ extern "C" bool observerApplyWifi(const char* ssid, const char* pwd);
 extern "C" __attribute__((weak)) bool observerApplyWifi(const char*, const char*) { return false; }
 extern "C" bool observerWifiStatus(char* buf, size_t bufsz);
 extern "C" __attribute__((weak)) bool observerWifiStatus(char*, size_t) { return false; }
-// `!path` map-link hook: POST the hop chain to the mesh-observer device API
-// and get back a short map URL to append to the reply. Strong definition in
-// main.cpp on WITH_RUNTIME_WIFI builds; this fallback quietly skips the link
-// (the raw-hex reply always goes out either way).
-extern "C" bool observerPathShortUrl(const char* hashes, const char* origin,
-                                     const char* requester_pos, const char* reporter,
-                                     const char* requester, char* out, size_t outsz);
-extern "C" __attribute__((weak)) bool observerPathShortUrl(const char*, const char*, const char*,
-                                                           const char*, const char*, char*, size_t) {
-  return false;
-}
-// MQTT publisher hooks (`set mqtt_host` etc). Strong definitions in main.cpp
-// on WITH_RUNTIME_WIFI builds; these fallbacks make `set mqtt_*` an error
-// (and hide the mqtt status var) on builds without WiFi.
-extern "C" bool observerApplyMqtt();
-extern "C" __attribute__((weak)) bool observerApplyMqtt() { return false; }
 extern "C" void observerMqttRawPacket(float snr, float rssi, const uint8_t* raw, int len);
 extern "C" __attribute__((weak)) void observerMqttRawPacket(float, float, const uint8_t*, int) { }
+// Applying MQTT settings is defined in main.cpp; weak no-op so the setters
+// (and the mqtt status var) still link on builds without WiFi.
+extern "C" bool observerApplyMqtt();
+extern "C" __attribute__((weak)) bool observerApplyMqtt() { return false; }
 extern "C" bool observerMqttStatus(char* buf, size_t bufsz);
 extern "C" __attribute__((weak)) bool observerMqttStatus(char*, size_t) { return false; }
 extern "C" void observerMqttMessage(const char* kind, const char* channel,
@@ -536,11 +524,6 @@ bool MyMesh::observerSetVar(const char* raw_name, const char* value) {
   const char* name = canon_name;
   if (!_observer) return false;
 
-  if (strcmp(name, "bot_enable") == 0) {
-    _prefs.bot_enabled = (value[0] == '1') ? 1 : 0;
-    savePrefs();
-    return true;
-  }
   if (strcmp(name, "mqtt_tls_insecure") == 0) {
     _prefs.mqtt_tls_insecure = (value[0] == '1' || value[0] == 'o' /*on*/) ? 1 : 0;
     savePrefs();
@@ -627,25 +610,6 @@ bool MyMesh::observerSetVar(const char* raw_name, const char* value) {
     if (!observerApplyWifi(_prefs.wifi_ssid, _prefs.wifi_pwd)) {  // no WiFi on this build
       StrHelper::strzcpy(dest, old, destsz);
       return false;
-    }
-    savePrefs();
-    return true;
-  }
-  bool is_url = strcmp(name, "obs_url") == 0;
-  if (is_url || strcmp(name, "obs_token") == 0) {
-    // mesh-observer device API for `!path` map links; `-` clears (see wifi vars).
-    // Oversize values are REJECTED, not truncated -- a silently clipped token
-    // would 403 on every post and be miserable to debug.
-    const char* v = (strcmp(value, "-") == 0) ? "" : value;
-    if (is_url) {
-      if (v[0] && strncmp(v, "http", 4) != 0) return false;
-      if (strlen(v) >= sizeof(_prefs.obs_url)) return false;
-      StrHelper::strzcpy(_prefs.obs_url, v, sizeof(_prefs.obs_url));
-      size_t l = strlen(_prefs.obs_url);          // store without a trailing '/':
-      while (l > 0 && _prefs.obs_url[l - 1] == '/') _prefs.obs_url[--l] = 0; // firmware appends the path
-    } else {
-      if (strlen(v) >= sizeof(_prefs.obs_token)) return false;
-      StrHelper::strzcpy(_prefs.obs_token, v, sizeof(_prefs.obs_token));
     }
     savePrefs();
     return true;
@@ -888,8 +852,6 @@ char* MyMesh::observerAppendVars(char* base, char* dp, const char* end) {
     }
   }
 
-  snprintf(kv, sizeof(kv), "bot.enable:%d", _prefs.bot_enabled ? 1 : 0);
-  dp = appendVarKV(dp, end, &first, kv);
 
   int m = observerFormatChannelMask(kv, 0, sizeof(kv), "bot.channel", _prefs.bot_channel_mask);
   if (m > 0) dp = appendVarKV(dp, end, &first, kv);
@@ -901,17 +863,7 @@ char* MyMesh::observerAppendVars(char* base, char* dp, const char* end) {
   snprintf(kv, sizeof(kv), "advert.interval:%lu", (unsigned long)_observer->advert_interval_s);
   dp = appendVarKV(dp, end, &first, kv);
 
-  if (have_mqtt) {
-    char obs_echo[sizeof(_prefs.obs_url)];
-    StrHelper::strzcpy(obs_echo, _prefs.obs_url[0] ? _prefs.obs_url : "off", sizeof(obs_echo));
-    for (char* c = obs_echo; *c; c++) if (*c == ':') *c = ';';
-    snprintf(kv, sizeof(kv), "obs.url:%s", obs_echo);
-    dp = appendVarKV(dp, end, &first, kv);
-  }
 
-  // Lowest priority (rarely queried live): the path-only channel set.
-  m = observerFormatChannelMask(kv, 0, sizeof(kv), "bot.path_channel", _prefs.bot_path_mask);
-  if (m > 0) dp = appendVarKV(dp, end, &first, kv);
 
   return dp;
 }

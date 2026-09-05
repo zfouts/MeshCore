@@ -34,18 +34,28 @@ struct NodePrefs {  // persisted to file
   uint8_t autoadd_max_hops;  // 0 = no limit, 1 = direct (0 hops), N = up to N-1 hops (max 64)
   char default_scope_name[31];
   uint8_t default_scope_key[16];
-  uint8_t bot_enabled;   // observer_node: bot master enable (0/1)
+  uint8_t bot_enabled;   // RESERVED. The bot command surface was removed; this is
+                         // no longer read. DO NOT DELETE: prefs are stored
+                         // POSITIONALLY, and dropping it would shift every field
+                         // after it (mqtt_* starts at offset 389) and corrupt the
+                         // stored config of every deployed node.
   uint8_t bot_channel;   // observer_node: group channel index the bot answers on (0xFF = off)
   uint8_t ble_enabled;   // observer_node: BLE advertising enable (0/1) -- toggled via `!ble on/off`
   uint8_t bot_control_channel; // observer_node: channel index authorized for control writes (0xFF = off)
   char wifi_ssid[33];    // observer_node: WiFi STA SSID, set via `set wifi_ssid` ("" = WiFi off)
   char wifi_pwd[65];     // observer_node: WiFi passphrase, set via `set wifi_pwd` ("" = open network)
   uint32_t boot_count;   // observer_node: boots since first flash (surfaced via `!boot`)
+  // RESERVED -- no longer read (see bot_enabled). Kept because prefs are
+  // stored POSITIONALLY: removing these shifts mqtt_* and corrupts the
+  // stored config of every deployed node.
   char obs_url[65];      // observer_node: mesh-observer base URL for !path map links ("" = off)
   char obs_token[65];    // observer_node: observer device token (sent as X-Device-Token;
                          // 64 chars fits an openssl rand -hex 24/32 secret)
   uint64_t bot_channel_mask; // observer_node: bitmask of channel indices the bot answers on
                              // (multi-channel; 0 = derived from legacy bot_channel at boot)
+  // RESERVED -- no longer read (see bot_enabled). Kept because prefs are
+  // stored POSITIONALLY: removing these shifts mqtt_* and corrupts the
+  // stored config of every deployed node.
   uint64_t bot_path_mask;    // observer_node: channels where ONLY `!path` answers (e.g. a
                              // public #bot) -- every other command stays silent there
   char mqtt_host[65];    // observer_node: broker "[mqtt(s)://]host[:port]", default 1883/8883-tls ("" = off)

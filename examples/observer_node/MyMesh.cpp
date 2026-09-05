@@ -585,9 +585,6 @@ bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
   observerCountForward(allowed); // tally relayed/dropped for stats
 #endif
   if (!allowed) return false;
-#ifdef WITH_BOT_COMMANDS
-  _relay_count++; // track relayed packets for the bot's telemetry reply
-#endif
   return true;
 }
 
@@ -688,9 +685,6 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
     char _h[MAX_PATH_SIZE * 2 + 1]; int _hn = fmtRxHops(pkt, _h, sizeof(_h));
     observerMqttMessage("channel", chname, NULL, text, pkt ? pkt->getSNR() : 0.0f, _h, _hn, timestamp);
   }
-#ifdef WITH_BOT_COMMANDS
-  handleBotChannel(channel, pkt, timestamp, text); // bot answers on the configured channel
-#endif
 #endif
   int i = 0;
   if (app_target_ver >= 3) {
@@ -1042,11 +1036,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.tx_power_dbm = LORA_TX_POWER;
   _prefs.gps_enabled = 0;       // GPS disabled by default
   _prefs.gps_interval = 0;      // No automatic GPS updates by default
-#if defined(WITH_BOT_COMMANDS) && RELAY_DEFAULT_ON
-  _prefs.client_repeat = 1;     // observer_node: act as a relay by default (first boot)
-#endif
 #ifdef WITH_OBSERVER_EXTRAS
-  _prefs.bot_enabled = 1;       // bot answers by default
   _prefs.bot_channel = 0xFF;    // channel bot off until configured (control channel only)
   _prefs.ble_enabled = 1;       // BLE advertising on by default (toggle via `!ble off`)
   _prefs.bot_control_channel = 0xFF; // control channel off until configured

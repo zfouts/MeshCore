@@ -3,7 +3,8 @@
 // ---------------------------------------------------------------------------
 // ObserverProbe -- schedule + policy for the observer node's active telemetry
 // prober. Compiled only into the `*_observer_node_*` build envs, which define
-// WITH_OBSERVER_PROBE and leave WITH_BOT_COMMANDS / WITH_RELAY_POLICY OFF.
+// WITH_OBSERVER_PROBE and leave WITH_RELAY_POLICY OFF. (WITH_BOT_COMMANDS is
+// gone -- the bot command surface was removed.)
 //
 // The node walks its known-repeater roster and, twice a day per repeater,
 // performs a *blank-password* login followed by a REQ_TYPE_GET_TELEMETRY_DATA

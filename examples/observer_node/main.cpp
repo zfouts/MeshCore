@@ -248,77 +248,12 @@ void halt() {
     return true;
   }
 
-  #include <HTTPClient.h>
-  #include <WiFiClientSecure.h>
 
-  // JSON-safe copy of a node/sender name: drop the two characters that could
-  // break out of a snprintf-built JSON string.
-  static void jsonSanitize(const char* in, char* out, size_t outsz) {
-    size_t o = 0;
-    for (const char* p = in ? in : ""; *p && o < outsz - 1; p++)
-      if (*p != '"' && *p != '\\') out[o++] = *p;
-    out[o] = 0;
-  }
-
-  // `!path` map link: POST the hop chain to the mesh-observer device API
-  // (`set obs_url` / `set obs_token`) and return the short URL it mints.
-  // BLOCKING for up to ~5s including a TLS handshake -- the radio is not
-  // serviced meanwhile. Bot replies are rate-limited and !path is a human
-  // command, so the stall is accepted; everything fails soft to the plain
-  // hex reply. Strong definition; weak fallback in ObserverNode.cpp.
-  extern "C" bool observerPathShortUrl(const char* hashes, const char* origin,
-                                       const char* requester_pos, const char* reporter,
-                                       const char* requester, char* out, size_t outsz) {
-    auto p = the_mesh.getNodePrefs();
-    if (!p->obs_url[0] || WiFi.status() != WL_CONNECTED) return false;
-
-    char url[112];
-    snprintf(url, sizeof(url), "%s/api/device/path", p->obs_url);
-    char rep[33], req[33];
-    jsonSanitize(reporter, rep, sizeof(rep));
-    jsonSanitize(requester, req, sizeof(req));
-    char body[288];
-    int n = snprintf(body, sizeof(body), "{\"h\":\"%s\"", hashes);
-    if (origin && origin[0])         n += snprintf(body + n, sizeof(body) - n, ",\"o\":\"%s\"", origin);
-    if (requester_pos && requester_pos[0]) n += snprintf(body + n, sizeof(body) - n, ",\"q\":\"%s\"", requester_pos);
-    if (rep[0])                      n += snprintf(body + n, sizeof(body) - n, ",\"n\":\"%s\"", rep);
-    if (req[0])                      n += snprintf(body + n, sizeof(body) - n, ",\"r\":\"%s\"", req);
-    if (n >= (int)sizeof(body) - 2) return false;   // truncated -> don't send garbage
-    n += snprintf(body + n, sizeof(body) - n, "}");
-
-    HTTPClient http;
-    WiFiClientSecure tls;
-    bool begun;
-    if (strncmp(p->obs_url, "https:", 6) == 0) {
-      tls.setInsecure();   // no CA bundle on-device; the device token is the auth
-      begun = http.begin(tls, url);
-    } else {
-      begun = http.begin(url);
-    }
-    if (!begun) return false;
-    http.setConnectTimeout(2500);
-    http.setTimeout(3000);
-    http.addHeader("Content-Type", "application/json");
-    if (p->obs_token[0]) http.addHeader("X-Device-Token", p->obs_token);
-
-    bool found = false;
-    int code = http.POST((uint8_t*)body, n);
-    if (code == 200) {
-      String resp = http.getString();
-      int i = resp.indexOf("\"url\":\"");
-      if (i >= 0) {
-        int e = resp.indexOf('"', i + 7);
-        int len = e - (i + 7);
-        if (e > i && len > 0 && len < (int)outsz) {
-          memcpy(out, resp.c_str() + i + 7, len);
-          out[len] = 0;
-          found = true;
-        }
-      }
-    }
-    http.end();
-    return found;
-  }
+  // The `!path` map-link hook (a blocking POST to the mesh-observer device
+  // API, configured by obs.url / obs.token) was REMOVED along with the bot
+  // command surface: its only caller was the bot's !path handler, which went
+  // away when observer_node was decoupled from combined_node. That left a
+  // ~5s blocking TLS POST that nothing could reach. See CHANGELOG to restore.
 
   // ---- MQTT telemetry publisher (`set mqtt_host <host[:port]>`) -----------
   // Publishes to any MQTT 3.1.1 broker over the node's own OUTBOUND socket,
