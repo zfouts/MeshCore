@@ -353,17 +353,45 @@ void halt() {
   static int mqtt_err_tls = 0;       // esp_tls_last_esp_err
   static int mqtt_err_sock = 0;      // transport sock errno
   static int mqtt_err_rc = 0;        // broker CONNACK return code
-  // Reconnect watchdog: esp_mqtt auto-retries a dropped connection, but a
-  // dropped TLS session often can't re-handshake (heap fragmentation ->
-  // mbedtls setup/handshake fails, tls0x8017/0x801a) and wedges until a clean
-  // boot. If MQTT stays down while WiFi is up, escalate: a full client re-init
-  // first, then reboot. Arms only after a first successful connect, so a
-  // misconfigured/unreachable broker can't reboot-loop from cold.
-  static bool mqtt_ever_connected = false;
-  static unsigned long mqtt_down_since_ms = 0;
-  static bool mqtt_soft_tried = false;
-  #ifndef OBS_MQTT_REBOOT_S
-  #define OBS_MQTT_REBOOT_S 300   // reboot after this long down (WiFi up); soft re-init at half
+  // Reconnect policy. Ported from agessaman/MeshCore observer-firmware
+  // (src/helpers/MQTTConnectionPolicy.h + MQTTBridge::optimizeMqttClientConfig).
+  //
+  // esp_mqtt's own auto-reconnect is DISABLED. It retries on a flat 10s timer
+  // forever, and every retry is a fresh TLS handshake needing ~40KB of internal
+  // DRAM -- so an outage became a heap-thrash loop, which the old watchdog
+  // "solved" by calling ESP.restart() every 5 minutes. That reboot loop WAS the
+  // flapping: the node lost mesh state and re-adverted on every cycle, and a
+  // broker-side fault looked like a firmware fault. There is no reboot here now.
+  //
+  // Instead, three things, all of them from the reference implementation:
+  //   1. an exponential ladder, so a dead broker is retried rarely, not hourly*720;
+  //   2. a stability requirement before the ladder resets -- CONNACK alone proves
+  //      only that the handshake worked, so a link that cannot survive one
+  //      keepalive round-trip keeps its earned rung instead of dropping back to
+  //      10s and hammering TLS (this is what stops flap -> reset -> flap);
+  //   3. a circuit breaker, so a slot that is genuinely down stops costing heap.
+  static unsigned long mqtt_connected_at = 0;    // millis of CONNACK; 0 = down or already reset
+  static unsigned long mqtt_last_attempt = 0;
+  static uint8_t mqtt_backoff = 0;               // ladder index; 5 = saturated at the top rung
+  static uint8_t mqtt_top_fails = 0;             // consecutive failures at the top rung
+  static bool mqtt_breaker = false;              // tripped: routine retries stopped
+  #define MQTT_STABLE_RESET_MS   120000UL   // hold this long before the ladder resets
+  #define MQTT_BREAKER_PROBE_MS 1800000UL   // tripped -> probe once every 30 min
+  #define MQTT_MAX_FAILS_AT_TOP 3
+  static const unsigned long MQTT_BACKOFF_MS[] = {
+    10000UL, 30000UL, 60000UL, 120000UL, 300000UL
+  };
+  static unsigned long mqttBackoffMs() {
+    return MQTT_BACKOFF_MS[mqtt_backoff < 5 ? mqtt_backoff : 4];
+  }
+  // Cloudflare -- and most HTTPS ingresses -- close an idle WebSocket at ~100s,
+  // not configurable, so keepalive has to sit safely under that. The old 30s
+  // gave 2.5x more chances for one late PINGRESP to tear down the session and
+  // force a full re-handshake.
+  #ifdef BOARD_HAS_PSRAM
+  #define OBS_MQTT_KEEPALIVE_S 45
+  #else
+  #define OBS_MQTT_KEEPALIVE_S 75
   #endif
 
   // Send bridge: the esp_mqtt task parses <prefix>/send/<channel> messages
@@ -397,6 +425,17 @@ void halt() {
     if (p->mqtt_topic[0]) {
       // explicit override wins, used verbatim
       snprintf(mqtt_prefix, sizeof(mqtt_prefix), "%s", p->mqtt_topic);
+    } else if (p->mqtt_iata[0]) {
+      // Collector layout: meshcore/<iata>/<node>. CoreScope and agessaman-style
+      // ingests parse segment 1 as the observer's REGION (and filter/blacklist on
+      // it), not as a login -- so when an IATA is set it takes the segment.
+      // NOTE this is deliberately mutually exclusive with the mqtt_user layout
+      // below: a mosquitto `topic ... meshcore/%u/#` ACL stops matching once
+      // segment 1 is a region, so the two namespaces cannot both be live.
+      char iata[sizeof(p->mqtt_iata)]; StrHelper::strzcpy(iata, p->mqtt_iata, sizeof(iata));
+      mqttSanitizeSeg(iata);
+      snprintf(mqtt_prefix, sizeof(mqtt_prefix), "meshcore/%s/%s", iata, p->node_name);
+      mqttSanitizeSeg(mqtt_prefix + 9 + strlen(iata) + 1);   // hygiene on the <node> part only
     } else if (user[0]) {
       // per-user namespace: meshcore/<user>/<node> (ACL-aligned)
       snprintf(mqtt_prefix, sizeof(mqtt_prefix), "meshcore/%s/%s", user, p->node_name);
@@ -421,7 +460,10 @@ void halt() {
       mqtt_connected = true;
       char t[96];
       snprintf(t, sizeof(t), "%s/status", mqtt_prefix);
-      esp_mqtt_client_publish(mqtt_client, t, "online", 0, 1, true);  // pairs with the LWT below
+      // enqueue(), not publish(): this runs in the esp_mqtt task's event
+      // dispatch, where a blocking write stalls the event loop (and with it the
+      // keepalive PINGs) for up to network.timeout_ms.
+      esp_mqtt_client_enqueue(mqtt_client, t, "online", 0, 1, true, true);  // pairs with the LWT below
       snprintf(t, sizeof(t), "%s/send/+", mqtt_prefix);
       esp_mqtt_client_subscribe(mqtt_client, t, 0);                   // MQTT->mesh send bridge
       if (mqtt_shared_prefix[0] && strcmp(mqtt_shared_prefix, mqtt_prefix) != 0) {
@@ -430,10 +472,12 @@ void halt() {
       }
       next_mqtt_pub = 0;   // first telemetry right away
       mqtt_err_type = mqtt_err_tls = mqtt_err_sock = mqtt_err_rc = 0;
-      mqtt_ever_connected = true;
-      mqtt_down_since_ms = 0;   // healthy -> disarm the watchdog
+      mqtt_connected_at = millis();
+      // The backoff ladder is deliberately NOT reset here. mqttLoop() resets it
+      // only once the link has held MQTT_STABLE_RESET_MS.
     } else if (event_id == MQTT_EVENT_DISCONNECTED) {
-      mqtt_connected = false;   // esp_mqtt's task retries on its own
+      mqtt_connected = false;   // mqttLoop() schedules the retry (auto-reconnect is off)
+      mqtt_connected_at = 0;
     } else if (event_id == MQTT_EVENT_ERROR) {
       esp_mqtt_event_handle_t ev = (esp_mqtt_event_handle_t)event_data;
       if (ev->error_handle) {
@@ -465,7 +509,11 @@ void halt() {
   // (Re)start the client from prefs -- called at boot and on every
   // `set mqtt_*`. Strong def; weak fallback in ObserverNode.cpp errors the
   // vars out on builds without WiFi.
-  extern "C" bool observerApplyMqtt() {
+  // Tear down and rebuild the esp_mqtt client. Used both by a config change
+  // and by the reconnect escalation -- a full re-init is what clears a
+  // half-open socket or a wedged mbedtls context, and is the strongest recovery
+  // available now that ESP.restart() is gone.
+  static bool mqttStartClient() {
     if (mqtt_client) {                 // config change: rebuild from scratch
       esp_mqtt_client_stop(mqtt_client);
       esp_mqtt_client_destroy(mqtt_client);
@@ -510,7 +558,20 @@ void halt() {
     cfg.session.last_will.topic = lwt;
     cfg.session.last_will.msg = "offline";
     cfg.session.last_will.retain = true;
-    cfg.session.keepalive = 30;
+    cfg.session.keepalive = OBS_MQTT_KEEPALIVE_S;
+    cfg.network.disable_auto_reconnect = true;   // mqttLoop() drives reconnection
+    // esp-mqtt resends an unacked QoS-1 PUBLISH every 1s by default, so a single
+    // slow PUBACK floods subscribers with byte-identical copies of one message.
+    // 15s allows exactly one retry inside the 30s outbox expiry.
+    cfg.session.message_retransmit_timeout = 15000;
+    // WSS layers the WebSocket transport on top of esp-tls; mbedtls handshake
+    // frames are deep and the 6144 default is thin for the pair.
+    cfg.task.stack_size = 8192;
+    // Set both explicitly: out_size defaults to 0, which tracks buffer.size, and
+    // a later change to one silently moves the other. Largest publish is the
+    // ~560B msg payload plus a ~104B topic and header.
+    cfg.buffer.size = 1024;
+    cfg.buffer.out_size = 1024;
   #else
     cfg.uri = uri;
     if (tls) {
@@ -522,7 +583,12 @@ void halt() {
     cfg.lwt_topic = lwt;
     cfg.lwt_msg = "offline";
     cfg.lwt_retain = 1;
-    cfg.keepalive = 30;
+    cfg.keepalive = OBS_MQTT_KEEPALIVE_S;
+    cfg.disable_auto_reconnect = true;
+    cfg.message_retransmit_timeout = 15000;
+    cfg.task_stack = 8192;
+    cfg.buffer_size = 1024;
+    cfg.out_buffer_size = 1024;
   #endif
     mqtt_client = esp_mqtt_client_init(&cfg);
     if (mqtt_client == NULL) return true;  // vars accepted; client start retried on next set
@@ -531,14 +597,40 @@ void halt() {
     return true;
   }
 
+  // Called at boot and on every `set mqtt_*`. Reconfiguring a slot clears the
+  // circuit breaker and the ladder (same rule as the reference implementation):
+  // the operator just changed something, so the previous failures no longer
+  // describe the current config.
+  extern "C" bool observerApplyMqtt() {
+    mqtt_backoff = 0;
+    mqtt_top_fails = 0;
+    mqtt_breaker = false;
+    mqtt_last_attempt = millis();
+    return mqttStartClient();
+  }
+
   extern "C" bool observerMqttStatus(char* buf, size_t bufsz) {
     auto p = the_mesh.getNodePrefs();
     if (!p->mqtt_host[0])    snprintf(buf, bufsz, "off");
     else if (mqtt_connected) snprintf(buf, bufsz, "connected");
-    else if (mqtt_err_type)  // t=esp_mqtt_error_type tls=esp-tls err sock=errno rc=CONNACK
-      snprintf(buf, bufsz, "connecting t%d tls0x%x sock%d rc%d",
-               mqtt_err_type, (unsigned)mqtt_err_tls, mqtt_err_sock, mqtt_err_rc);
-    else                     snprintf(buf, bufsz, "connecting");
+    // r=backoff rung t=esp_mqtt_error_type tls=esp-tls err sock=errno rc=CONNACK.
+    // sock/rc are appended ONLY when non-zero: this string is packed into the
+    // 176-byte custom-vars reply frame, where every byte spent here evicts a
+    // trailing var (that cap is why the status buffer was widened 24->48 in the
+    // first place). Omitting the two fields that read 0 in the common transport
+    // failure makes this SHORTER than the old fixed-width form even with the
+    // rung added -- "connecting r2 t1 tls0x8006" vs "connecting t1 tls0x8006 sock0 rc0".
+    else if (mqtt_err_type) {
+      int n = snprintf(buf, bufsz, "%s r%d t%d tls0x%x",
+                       mqtt_breaker ? "breaker" : "connecting", mqtt_backoff,
+                       mqtt_err_type, (unsigned)mqtt_err_tls);
+      if (n > 0 && mqtt_err_sock && (size_t)n < bufsz)
+        n += snprintf(buf + n, bufsz - n, " sock%d", mqtt_err_sock);
+      if (n > 0 && mqtt_err_rc && (size_t)n < bufsz)
+        snprintf(buf + n, bufsz - n, " rc%d", mqtt_err_rc);
+    }
+    else                     snprintf(buf, bufsz, "%s r%d",
+                                      mqtt_breaker ? "breaker" : "connecting", mqtt_backoff);
     return true;
   }
 
@@ -696,25 +788,74 @@ void halt() {
     }
   }
 
+  // Every received frame, as raw hex -> <prefix>/packets, in the shape CoreScope's
+  // ingestor expects: {"raw":"<hex>","SNR":<f>,"RSSI":<f>} (their key casing, not
+  // ours). It decodes the frame itself, so this is deliberately NOT our decoded
+  // advert/contact/msg data -- those topics stay as they are for the bot framework
+  // and are simply ignored by collectors that don't know them.
+  //
+  // Called from logRxRaw() in the mesh loop (main task), once per frame HEARD --
+  // including frames we drop. That is a much higher publish rate than anything
+  // else here, which is why it is opt-in (`set mqtt_packets on`) and enqueued
+  // rather than published: enqueue() never blocks the mesh loop on the socket.
+  extern "C" void observerMqttRawPacket(float snr, float rssi, const uint8_t* raw, int len) {
+    auto p = the_mesh.getNodePrefs();
+    if (!p->mqtt_packets || !mqtt_client || !mqtt_connected) return;
+    if (len <= 0 || len > MAX_TRANS_UNIT) return;
+    // MAX_TRANS_UNIT(255)*2 hex + the JSON envelope; stays under the 1024 buffer.
+    char payload[MAX_TRANS_UNIT * 2 + 64];
+    int n = snprintf(payload, sizeof(payload), "{\"raw\":\"");
+    for (int i = 0; i < len; i++) n += snprintf(payload + n, sizeof(payload) - n, "%02x", raw[i]);
+    n += snprintf(payload + n, sizeof(payload) - n, "\",\"SNR\":%.1f,\"RSSI\":%.0f}",
+                  (double)snr, (double)rssi);
+    if (n <= 0 || n >= (int)sizeof(payload)) return;
+    char topic[104];
+    snprintf(topic, sizeof(topic), "%s/packets", mqtt_prefix);
+    esp_mqtt_client_enqueue(mqtt_client, topic, payload, n, 0, false, true);
+  }
+
   static void mqttLoop() {
     if (!mqtt_client) return;
     if (!mqtt_connected) {
-      // Reconnect watchdog (see mqtt_down_since_ms notes). Only counts down
-      // while WiFi is up and we've connected before; a WiFi outage resets it so
-      // WiFi's own reconnect isn't mistaken for an MQTT wedge.
-      if (mqtt_ever_connected && WiFi.status() == WL_CONNECTED) {
-        if (mqtt_down_since_ms == 0) { mqtt_down_since_ms = millis(); mqtt_soft_tried = false; }
-        unsigned long down = millis() - mqtt_down_since_ms;
-        if (down > OBS_MQTT_REBOOT_S * 1000UL) {
-          ESP.restart();   // clean boot reliably reconnects (defragments the heap)
-        } else if (!mqtt_soft_tried && down > (OBS_MQTT_REBOOT_S * 1000UL) / 2) {
-          mqtt_soft_tried = true;
-          observerApplyMqtt();   // fresh esp_mqtt/TLS context -- clears a half-open/stuck socket
+      // Reconnect driver (auto-reconnect is off; see the ladder notes above).
+      // This MUST also cover the never-yet-connected case: with esp_mqtt's own
+      // retry disabled, a node whose broker is down at boot would otherwise sit
+      // at "connecting" forever. The old watchdog could gate on a prior success
+      // because its escalation was a reboot; the ladder has no such hazard, and
+      // a genuinely bad mqtt_host simply climbs to the top rung and trips the
+      // breaker, which is the wanted outcome.
+      // Gated on WiFi only: a WiFi outage is WiFi's problem, not MQTT's, and
+      // must not burn rungs.
+      if (WiFi.status() == WL_CONNECTED) {
+        unsigned long now = millis();
+        if (mqtt_breaker) {
+          // Tripped: no routine retries. One full re-init probe every 30 min;
+          // if it connects and holds, the stable-reset below clears the breaker.
+          if (now - mqtt_last_attempt >= MQTT_BREAKER_PROBE_MS) {
+            mqtt_last_attempt = now;
+            mqttStartClient();
+          }
+        } else if (now - mqtt_last_attempt >= mqttBackoffMs()) {
+          mqtt_last_attempt = now;
+          if (mqtt_backoff < 5) {
+            mqtt_backoff++;                        // climb: 10 -> 30 -> 60 -> 120 -> 300s
+            esp_mqtt_client_reconnect(mqtt_client);
+          } else if (++mqtt_top_fails >= MQTT_MAX_FAILS_AT_TOP) {
+            mqtt_breaker = true;                   // ~15 min at the top rung -> give up
+          } else {
+            mqttStartClient();                     // at the top rung, escalate to a re-init
+          }
         }
-      } else {
-        mqtt_down_since_ms = 0;
       }
       return;
+    }
+    // Connected. The ladder resets only once the link has PROVEN stable for
+    // longer than one keepalive round-trip -- CONNACK alone does not count.
+    if (mqtt_connected_at && (millis() - mqtt_connected_at) >= MQTT_STABLE_RESET_MS) {
+      mqtt_backoff = 0;
+      mqtt_top_fails = 0;
+      mqtt_breaker = false;
+      mqtt_connected_at = 0;   // reset once per connection
     }
     // Drain the send bridge (main-task context, so mesh calls are safe here).
     // Peek-then-receive: an over-budget message STAYS queued for a later pass
@@ -730,8 +871,11 @@ void halt() {
       char t[104], payload[288];
       snprintf(t, sizeof(t), "%s/telemetry", mqtt_prefix);
       int n = the_mesh.observerFormatMqttTelemetry(payload, sizeof(payload));
+      // enqueue(), not publish(): publish() blocks the caller on the socket for
+      // up to network.timeout_ms, and this runs in the MAIN task -- a stalled
+      // uplink would stall the mesh loop with it.
       if (n > 0 && n < (int)sizeof(payload))
-        esp_mqtt_client_publish(mqtt_client, t, payload, n, 0, false);
+        esp_mqtt_client_enqueue(mqtt_client, t, payload, n, 0, false, true);
       // All attached sensor readings (temperature/humidity/pressure/GPS/...),
       // same cadence. Empty "{}" on a node with no sensors -- still published
       // so a subscriber can tell "no sensors" from "node offline".
@@ -739,7 +883,7 @@ void halt() {
       int sn = the_mesh.observerFormatSensorsJson(sensors_json, sizeof(sensors_json));
       if (sn > 0 && sn < (int)sizeof(sensors_json)) {
         snprintf(t, sizeof(t), "%s/sensors", mqtt_prefix);
-        esp_mqtt_client_publish(mqtt_client, t, sensors_json, sn, 0, false);
+        esp_mqtt_client_enqueue(mqtt_client, t, sensors_json, sn, 0, false, true);
       }
     }
     if (next_mqtt_contacts == 0 || (long)(millis() - next_mqtt_contacts) >= 0) {

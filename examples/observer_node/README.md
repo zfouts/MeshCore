@@ -67,10 +67,22 @@ own subtree. Anonymous (no `mqtt_user`) falls back to `meshcore/<node_name>`.
 - **NTP** — the node disciplines its clock from `pool.ntp.org` (SNTP) on every
   WiFi connect, so `rx_ts`/`skew_s` and TLS cert dates are trustworthy without
   a manual `clock sync`.
-- **Reconnect watchdog** — if MQTT stays down while WiFi is up, the node
-  escalates (full client re-init, then `ESP.restart()` at `OBS_MQTT_REBOOT_S`,
-  default 300 s) so the bridge self-heals instead of wedging. Arms only after a
-  first successful connect.
+- **Reconnect ladder + circuit breaker** — esp_mqtt's own auto-reconnect is
+  disabled; the node retries on a 10 / 30 / 60 / 120 / 300 s backoff ladder.
+  The ladder resets only after a connection has *held* for 2 min — CONNACK
+  alone proves the handshake worked, not that the link is usable, so a session
+  that dies inside one keepalive keeps its earned rung instead of hammering
+  TLS at the 10 s rung. After 3 further failures at the top rung (~15 min) the
+  circuit breaker trips and routine retries stop; a tripped bridge is probed
+  with a full client re-init once every 30 min, and reconfiguring any `mqtt_*`
+  var clears it. The ladder also covers the first connect, so a node whose
+  broker is down at boot still reconnects when it returns. `get mqtt` shows the
+  rung (`connecting r3 …`) or `breaker …`.
+
+  The node no longer reboots itself: the old watchdog called `ESP.restart()`
+  after 300 s down, so a broker- or ingress-side outage turned into a reboot
+  every 5 min, losing mesh state and re-adverting each cycle — which looked
+  like a firmware fault and was the main source of observed "TLS flapping".
 
 ## Optional active prober (off by default)
 

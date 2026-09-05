@@ -59,4 +59,13 @@ struct NodePrefs {  // persisted to file
   uint32_t advert_interval_s; // observer_node: periodic zero-hop self-advert cadence in
                               // seconds, set via `set advert_interval` (0 = off;
                               // 0xFFFFFFFF = unset -> build default OBS_ADVERT_INTERVAL_S)
+  char mqtt_iata[5];     // observer_node: 3-letter region code used as the FIRST topic
+                         // segment (meshcore/<iata>/<node>/...) for CoreScope /
+                         // agessaman-style collectors, which parse it as the observer's
+                         // region and filter on it. "" = fall back to mqtt_user (our
+                         // original ACL-aligned layout).
+  uint8_t mqtt_packets;  // observer_node: 1 = publish every received frame as raw hex to
+                         // <prefix>/packets ({"raw","SNR","RSSI"} -- the CoreScope
+                         // ingest format). Default 0: this is by far the highest-volume
+                         // topic, one publish per frame heard.
 };

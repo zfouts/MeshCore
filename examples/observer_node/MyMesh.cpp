@@ -283,9 +283,16 @@ uint8_t MyMesh::getExtraAckTransmitCount() const {
   return _prefs.multi_acks;
 }
 
+// Strong def in main.cpp on MQTT-capable builds; weak no-op in ObserverNode.cpp
+// otherwise. Declared here so this TU can see it without pulling in main.cpp.
+extern "C" void observerMqttRawPacket(float snr, float rssi, const uint8_t* raw, int len);
+
 void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 #ifdef WITH_OBSERVER_EXTRAS
   observerOnRx(snr, rssi); // count received packets for stats
+  // Raw uplink for CoreScope-style collectors (`set mqtt_packets on`; no-op when
+  // off or when this build has no MQTT). Every frame heard, so it is gated there.
+  observerMqttRawPacket(snr, rssi, raw, len);
 #endif
   if (_serial->isConnected() && len + 3 <= MAX_FRAME_SIZE) {
     int i = 0;

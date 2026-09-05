@@ -251,11 +251,14 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     file.read((uint8_t *)&_prefs.mqtt_tls_insecure, sizeof(_prefs.mqtt_tls_insecure));     // 585 (absent in old files -> default kept)
     file.read((uint8_t *)&_prefs.advert_dump, sizeof(_prefs.advert_dump));                 // 586 (absent in old files -> default kept)
     file.read((uint8_t *)&_prefs.advert_interval_s, sizeof(_prefs.advert_interval_s));     // 587 (absent in old files -> default kept)
+    file.read((uint8_t *)_prefs.mqtt_iata, sizeof(_prefs.mqtt_iata));                      // 591 (absent in old files -> default kept)
+    file.read((uint8_t *)&_prefs.mqtt_packets, sizeof(_prefs.mqtt_packets));               // 596 (absent in old files -> default kept)
     _prefs.wifi_ssid[sizeof(_prefs.wifi_ssid) - 1] = 0;   // in case of a truncated file
     _prefs.wifi_pwd[sizeof(_prefs.wifi_pwd) - 1] = 0;
     _prefs.obs_url[sizeof(_prefs.obs_url) - 1] = 0;
     _prefs.obs_token[sizeof(_prefs.obs_token) - 1] = 0;
     _prefs.mqtt_host[sizeof(_prefs.mqtt_host) - 1] = 0;
+    _prefs.mqtt_iata[sizeof(_prefs.mqtt_iata) - 1] = 0;
     _prefs.mqtt_user[sizeof(_prefs.mqtt_user) - 1] = 0;
     _prefs.mqtt_pwd[sizeof(_prefs.mqtt_pwd) - 1] = 0;
     _prefs.mqtt_topic[sizeof(_prefs.mqtt_topic) - 1] = 0;
@@ -317,6 +320,8 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.mqtt_tls_insecure, sizeof(_prefs.mqtt_tls_insecure));     // 585
     file.write((uint8_t *)&_prefs.advert_dump, sizeof(_prefs.advert_dump));                 // 586
     file.write((uint8_t *)&_prefs.advert_interval_s, sizeof(_prefs.advert_interval_s));     // 587
+    file.write((uint8_t *)_prefs.mqtt_iata, sizeof(_prefs.mqtt_iata));                      // 591
+    file.write((uint8_t *)&_prefs.mqtt_packets, sizeof(_prefs.mqtt_packets));               // 596
 
     file.close();
   }

@@ -500,6 +500,8 @@ extern "C" __attribute__((weak)) bool observerPathShortUrl(const char*, const ch
 // (and hide the mqtt status var) on builds without WiFi.
 extern "C" bool observerApplyMqtt();
 extern "C" __attribute__((weak)) bool observerApplyMqtt() { return false; }
+extern "C" void observerMqttRawPacket(float snr, float rssi, const uint8_t* raw, int len);
+extern "C" __attribute__((weak)) void observerMqttRawPacket(float, float, const uint8_t*, int) { }
 extern "C" bool observerMqttStatus(char* buf, size_t bufsz);
 extern "C" __attribute__((weak)) bool observerMqttStatus(char*, size_t) { return false; }
 extern "C" void observerMqttMessage(const char* kind, const char* channel,
@@ -529,6 +531,34 @@ bool MyMesh::observerSetVar(const char* name, const char* value) {
     _prefs.mqtt_tls_insecure = (value[0] == '1' || value[0] == 'o' /*on*/) ? 1 : 0;
     savePrefs();
     observerApplyMqtt();   // rebuild the client with the new verification mode
+    return true;
+  }
+  if (strcmp(name, "mqtt_iata") == 0) {
+    // 3-letter region code -> first topic segment (see NodePrefs). `-` clears.
+    // Validated, not coerced: a bad code would silently publish into a namespace
+    // the collector filters out, which looks identical to "node is offline".
+    // "XXX" is rejected the same way agessaman's mqttIataValid() rejects it.
+    if (strcmp(value, "-") == 0) {
+      _prefs.mqtt_iata[0] = 0;
+    } else {
+      size_t l = strlen(value);
+      if (l != 3) return false;
+      char up[4];
+      for (int i = 0; i < 3; i++) {
+        if (!isalpha((unsigned char)value[i])) return false;
+        up[i] = toupper((unsigned char)value[i]);
+      }
+      up[3] = 0;
+      if (strcmp(up, "XXX") == 0) return false;
+      StrHelper::strzcpy(_prefs.mqtt_iata, up, sizeof(_prefs.mqtt_iata));
+    }
+    savePrefs();
+    observerApplyMqtt();   // prefix changes -> rebuild so subscriptions follow it
+    return true;
+  }
+  if (strcmp(name, "mqtt_packets") == 0) {
+    _prefs.mqtt_packets = (value[0] == '1' || value[0] == 'o' /*on*/) ? 1 : 0;
+    savePrefs();
     return true;
   }
   if (strcmp(name, "advert_dump") == 0) {
@@ -813,6 +843,14 @@ char* MyMesh::observerAppendVars(char* base, char* dp, const char* end) {
     for (char* c = mh; *c; c++) if (*c == ':') *c = ';';
     snprintf(kv, sizeof(kv), "mqtt_host:%s", mh);
     dp = appendVarKV(dp, end, &first, kv);
+    if (_prefs.mqtt_iata[0]) {        // only surfaced when set -- "" = legacy user layout
+      snprintf(kv, sizeof(kv), "mqtt_iata:%s", _prefs.mqtt_iata);
+      dp = appendVarKV(dp, end, &first, kv);
+    }
+    if (_prefs.mqtt_packets) {        // only surfaced when on -- it's the high-volume state
+      snprintf(kv, sizeof(kv), "mqtt_packets:1");
+      dp = appendVarKV(dp, end, &first, kv);
+    }
     if (_prefs.mqtt_tls_insecure) {   // only surfaced when on -- it's the unsafe state
       snprintf(kv, sizeof(kv), "mqtt_tls_insecure:1");
       dp = appendVarKV(dp, end, &first, kv);
