@@ -3,6 +3,14 @@
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
 
+#ifdef COMPANION_CHANNEL_MSG_HOOK
+// Optional build-time extension point: names a function the build supplies (via
+// -D or a force-included header) that sees every decrypted channel message after
+// it has been queued for the app. Stock builds leave it undefined; see
+// examples/remote_test_companion for a user.
+void COMPANION_CHANNEL_MSG_HOOK(uint8_t channel_idx, mesh::Packet* pkt, uint32_t timestamp, const char* text);
+#endif
+
 #define CMD_APP_START                 1
 #define CMD_SEND_TXT_MSG              2
 #define CMD_SEND_CHANNEL_TXT_MSG      3
@@ -586,6 +594,9 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
     channel_name = channel_details.name;
   }
   if (_ui) _ui->newMsg(path_len, channel_name, text, offline_queue_len);
+#endif
+#ifdef COMPANION_CHANNEL_MSG_HOOK
+  COMPANION_CHANNEL_MSG_HOOK(channel_idx, pkt, timestamp, text);
 #endif
 }
 

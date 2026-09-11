@@ -17,8 +17,7 @@ Commands:
   build-companion-firmwares: Build all companion firmwares for all build targets.
   build-repeater-firmwares: Build all repeater firmwares for all build targets.
   build-room-server-firmwares: Build all chat room server firmwares for all build targets.
-  build-fleet-observer-firmwares: Build all repeater_companion + observer_node firmwares for all build targets.
-  build-observer-firmwares: Build all observer_node firmwares for all supported boards.
+  build-fleet-firmwares: Build all repeater_companion + remote_test_companion firmwares for all build targets.
 
 Examples:
 Build firmware for the "RAK_4631_repeater" device target
@@ -258,22 +257,15 @@ build_kiss_modem_firmwares() {
 
 }
 
-build_observer_firmwares() {
-
-  # build all observer_node firmwares (passive monitor + MQTT + advert dump)
-  # for every supported board (envs end with _observer_node_wifi).
-  build_all_firmwares_by_suffix "_observer_node_wifi"
-
-}
-
-build_fleet_observer_firmwares() {
+build_fleet_firmwares() {
 
   # build this fork's own variants: repeater_companion (stock companion_radio
-  # with the repeat-mode frequency gate widened) and observer_node (passive
-  # monitor + MQTT + advert dump).
+  # with the repeat-mode frequency gate widened) and remote_test_companion
+  # (the same plus a private control-room "!msg" bot).
   build_all_firmwares_by_suffix "_repeater_companion_usb"
   build_all_firmwares_by_suffix "_repeater_companion_ble"
-  build_all_firmwares_by_suffix "_observer_node_wifi"
+  build_all_firmwares_by_suffix "_remote_test_companion_usb"
+  build_all_firmwares_by_suffix "_remote_test_companion_ble"
 
 }
 
@@ -281,7 +273,7 @@ build_firmwares() {
   build_companion_firmwares
   build_repeater_firmwares
   build_room_server_firmwares
-  build_fleet_observer_firmwares
+  build_fleet_firmwares
 }
 
 # clean build dir
@@ -323,8 +315,6 @@ elif [[ $1 == "get-repeater-firmwares-to-build" ]]; then
   get_pio_envs_ending_with_string "_repeater"
 elif [[ $1 == "get-room-server-firmwares-to-build" ]]; then
   get_pio_envs_ending_with_string "_room_server"
-elif [[ $1 == "build-fleet-observer-firmwares" ]]; then
-  build_fleet_observer_firmwares
-elif [[ $1 == "build-observer-firmwares" ]]; then
-  build_observer_firmwares
+elif [[ $1 == "build-fleet-firmwares" ]]; then
+  build_fleet_firmwares
 fi
