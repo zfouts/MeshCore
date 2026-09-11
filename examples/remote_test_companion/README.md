@@ -23,6 +23,88 @@ as a repeater and double as a remote test transmitter.
 Nothing else is forked, so these builds pick up companion_radio fixes for free.
 The repeat-gate half is the same trick `examples/repeater_companion` uses.
 
+## Build and flash
+
+### Envs
+
+| Board | Envs |
+|---|---|
+| Heltec V4 | `heltec_v4_remote_test_companion_ble`, `heltec_v4_remote_test_companion_usb` |
+| XIAO ESP32-S3 + Wio SX1262 | `Xiao_S3_WIO_remote_test_companion_ble`, `Xiao_S3_WIO_remote_test_companion_usb` |
+| XIAO ESP32-C6 + Wio SX1262 | `Xiao_C6_remote_test_companion_ble` |
+| XIAO nRF52840 + Wio SX1262 | `Xiao_nrf52_remote_test_companion_ble`, `Xiao_nrf52_remote_test_companion_usb` |
+| Seeed Wio Tracker L1 | `WioTrackerL1_remote_test_companion_ble`, `WioTrackerL1_remote_test_companion_usb` |
+
+`_ble` talks to the phone app over Bluetooth (PIN `123456`); `_usb` exposes the
+companion protocol on the USB serial port instead. Both accept meshcli over USB
+for setup. Pick `_ble` for a node you will carry, `_usb` for one that lives on a
+bench or behind a Raspberry Pi.
+
+### Build
+
+From the repo root, with [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/index.html)
+installed:
+
+    pio run -e Xiao_nrf52_remote_test_companion_ble
+
+The first build downloads the toolchain and takes a few minutes; later builds
+are incremental. Output lands in `.pio/build/<env>/`.
+
+To build every remote_test_companion (and repeater_companion) env with
+versioned, release-style artifacts in `out/`:
+
+    FIRMWARE_VERSION=v1.17.1 bash build.sh build-fleet-firmwares
+
+That produces `<env>-<version>-<sha>.uf2` for nRF52 boards and
+`<env>-<version>-<sha>.bin` plus a `-merged.bin` for ESP32 boards.
+
+### Flash
+
+**Any board, over USB with PlatformIO** (auto-detects the port; add
+`--upload-port /dev/tty...` if you have several devices attached):
+
+    pio run -e Xiao_nrf52_remote_test_companion_ble -t upload
+
+**nRF52 boards (XIAO nRF52840, Wio Tracker L1) by drag-and-drop**, no tools
+needed on the flashing machine: double-tap the reset button so the board mounts
+as a USB drive, then copy the `.uf2` from `out/` (or build one with
+`python3 bin/uf2conv/uf2conv.py .pio/build/<env>/firmware.hex -c -o firmware.uf2 -f 0xADA52840`)
+onto it. The drive ejects itself and the node reboots into the new firmware.
+
+**ESP32 boards (Heltec V4, XIAO S3, XIAO C6) with esptool**, if `-t upload`
+cannot get the board into download mode:
+
+    pio run -e heltec_v4_remote_test_companion_ble -t mergebin
+    esptool.py --chip auto --port /dev/tty.usbmodem101 --baud 460800 \
+        write_flash 0x0 .pio/build/heltec_v4_remote_test_companion_ble/firmware-merged.bin
+
+The merged image contains bootloader, partition table and app, so flashing it
+at `0x0` is a complete fresh install.
+
+Board notes:
+
+- A fresh ESP32 install wipes the settings partition: identity, name and
+  channels come back to defaults. Flashing only `firmware.bin` (what
+  `-t upload` does) keeps them.
+- XIAO S3: opening the USB-JTAG serial port can latch the chip in download mode.
+  If the node looks dead after flashing, unplug and replug it.
+- XIAO C6: the radio does not come up after a flash until the board has been
+  power-cycled, so unplug it once before testing.
+- Heltec V4: if `-t upload` hangs at "Connecting...", use the esptool route
+  above.
+
+### Confirm it took
+
+Over USB with meshcli (`pipx install meshcore-cli`):
+
+    meshcli -s /dev/tty.usbmodem101 infos
+    meshcli -s /dev/tty.usbmodem101 set radio 910.525,62.5,7,5,on
+
+The version reported by `infos` should carry the build's commit hash when built
+through `build.sh`, and the `set radio ... ,on` line must come back OK: on a
+stock companion build it fails with an illegal-argument error because 910.525
+is outside the default repeat gate. Then follow Setup.
+
 ## Setup
 
 1. Flash a `*_remote_test_companion_{ble,usb}` env.
